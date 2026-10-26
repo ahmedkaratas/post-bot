@@ -1,0 +1,207 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+  <title>InstaFit 1080×1350 — Instagram Post Boyutlandırıcı</title>
+  <link rel="stylesheet" href="style.css">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+</head>
+<body>
+  <div class="app-container">
+    <!-- Üst Başlık & Hızlı Bilgi -->
+    <header class="app-header">
+      <div class="header-left">
+        <div class="logo-icon">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <rect x="4" y="2" width="16" height="20" rx="3" />
+            <circle cx="12" cy="12" r="3" />
+          </svg>
+        </div>
+        <div class="header-title">
+          <h1>InstaFit</h1>
+          <span class="badge">1080 × 1350 px (4:5)</span>
+        </div>
+      </div>
+
+      <div class="header-actions">
+        <label class="btn btn-secondary" for="file-input" title="Galeriden veya bilgisayardan seç">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+            <polyline points="17 8 12 3 7 8" />
+            <line x1="12" y1="3" x2="12" y2="15" />
+          </svg>
+          <span>Fotoğraf Seç</span>
+        </label>
+        <input type="file" id="file-input" accept="image/*" class="visually-hidden">
+
+        <button id="btn-download" class="btn btn-primary" title="1080x1350 PNG olarak indir">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+            <polyline points="7 10 12 15 17 10" />
+            <line x1="12" y1="15" x2="12" y2="3" />
+          </svg>
+          <span>İndir (PNG)</span>
+        </button>
+
+        <button id="btn-share" class="btn btn-icon btn-secondary" title="Paylaş / Instagram">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <circle cx="18" cy="5" r="3" />
+            <circle cx="6" cy="12" r="3" />
+            <circle cx="18" cy="19" r="3" />
+            <line x1="8.59" y1="13.51" x2="15.42" y2="17.49" />
+            <line x1="15.41" y1="6.51" x2="8.59" y2="10.49" />
+          </svg>
+        </button>
+      </div>
+    </header>
+
+    <!-- Ana Çalışma Alanı: Canvas & Önizleme -->
+    <main class="canvas-viewport" id="viewport">
+      <div class="canvas-wrapper" id="canvas-wrapper">
+        <canvas id="preview-canvas" width="1080" height="1350"></canvas>
+
+        <!-- Kılavuz Çizgileri (Hizalama yaparken parlar) -->
+        <div class="guide guide-v" id="guide-v"></div>
+        <div class="guide guide-h" id="guide-h"></div>
+
+        <!-- Görsel Yokken Görünen Dropzone -->
+        <div class="empty-state" id="empty-state">
+          <div class="drop-icon">
+            <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+              <rect x="3" y="3" width="18" height="18" rx="3" />
+              <circle cx="8.5" cy="8.5" r="1.5" />
+              <polyline points="21 15 16 10 5 21" />
+            </svg>
+          </div>
+          <h3>Ekran Görüntüsü Yükle</h3>
+          <p>Tıkla, dosyayı buraya sürükle veya panodan yapıştır (<strong>Cmd+V</strong>)</p>
+          <div class="dropzone-badge">Otomatik 1080 × 1350 Siyah Tuvale Sığdırılır</div>
+        </div>
+      </div>
+    </main>
+
+    <!-- Alt Kontrol Paneli -->
+    <footer class="toolbar">
+      <div class="toolbar-content">
+        <!-- Hızlı Hizalama & Otomatik Sığdırma Butonları -->
+        <div class="toolbar-group">
+          <button id="btn-autofit" class="tool-btn" title="Görsele göre kenarlara otomatik sığdır">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <polyline points="15 3 21 3 21 9" />
+              <polyline points="9 21 3 21 3 15" />
+              <line x1="21" y1="3" x2="14" y2="10" />
+              <line x1="3" y1="21" x2="10" y2="14" />
+            </svg>
+            <span>Otomatik Sığdır</span>
+          </button>
+
+          <button id="btn-center" class="tool-btn" title="Tam merkeze hizala">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <circle cx="12" cy="12" r="10" />
+              <line x1="12" y1="2" x2="12" y2="22" />
+              <line x1="2" y1="12" x2="22" y2="12" />
+            </svg>
+            <span>Tam Ortala</span>
+          </button>
+
+          <button id="btn-fit-width" class="tool-btn" title="Yanlara değdir (Genişliğe göre sığdır)">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <line x1="18" y1="12" x2="6" y2="12" />
+              <polyline points="9 15 6 12 9 9" />
+              <polyline points="15 9 18 12 15 15" />
+              <line x1="3" y1="4" x2="3" y2="20" />
+              <line x1="21" y1="4" x2="21" y2="20" />
+            </svg>
+            <span>Yanlara Sığdır</span>
+          </button>
+
+          <button id="btn-fit-height" class="tool-btn" title="Üst ve alta değdir (Yüksekliğe göre sığdır)">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <line x1="12" y1="6" x2="12" y2="18" />
+              <polyline points="9 9 12 6 15 9" />
+              <polyline points="9 15 12 18 15 15" />
+              <line x1="4" y1="3" x2="20" y2="3" />
+              <line x1="4" y1="21" x2="20" y2="21" />
+            </svg>
+            <span>Üst/Alta Sığdır</span>
+          </button>
+        </div>
+
+        <div class="toolbar-divider"></div>
+
+        <!-- Zoom Kontrolü -->
+        <div class="toolbar-group zoom-group">
+          <button id="btn-zoom-out" class="icon-subtle" title="Küçült">-</button>
+          <input type="range" id="zoom-slider" min="10" max="300" value="100" step="1">
+          <button id="btn-zoom-in" class="icon-subtle" title="Büyüt">+</button>
+          <span id="zoom-value" class="zoom-text">100%</span>
+        </div>
+
+        <div class="toolbar-divider"></div>
+
+        <!-- Netlik & AI Süper Çözünürlük Kontrolü -->
+        <div class="toolbar-group sharpen-group">
+          <button id="btn-ai-upscale" class="tool-btn btn-ai" title="Gerçek yapay zeka ile piksel sayısını 4 katına çıkar (720p -> 1080p/2K)">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M12 2v4M12 18v4M4.93 4.93l2.83 2.83M16.24 16.24l2.83 2.83M2 12h4M18 12h4M4.93 19.07l2.83-2.83M16.24 7.76l2.83-2.83" />
+            </svg>
+            <span>🤖 AI 2x Piksel Artır</span>
+          </button>
+
+          <button id="btn-toggle-sharpen" class="tool-btn" title="Doğal kenar netliğini aç / kapat (%40)">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2" />
+            </svg>
+            <span>Doğal Netlik</span>
+          </button>
+
+          <div class="option-item" title="Netlik derecesi (Doğal kenar keskinliği)">
+            <input type="range" id="sharpen-slider" min="0" max="100" value="0" step="5">
+            <span id="sharpen-val" class="small-val">0%</span>
+          </div>
+        </div>
+
+        <div class="toolbar-divider"></div>
+
+        <!-- Ekstra Estetik Ayarları (Köşe yuvarlama & Kenar boşluğu) -->
+        <div class="toolbar-group aesthetic-group">
+          <div class="option-item" title="Ekran görüntüsünün köşelerini yuvarla (iOS stili)">
+            <label for="radius-slider">Köşe:</label>
+            <input type="range" id="radius-slider" min="0" max="60" value="0" step="2">
+            <span id="radius-val" class="small-val">0px</span>
+          </div>
+
+          <div class="option-item" title="Koyu temalı ekran görüntüleri için hafif kenarlık">
+            <label class="toggle-label">
+              <input type="checkbox" id="toggle-border">
+              <span>İnce Çizgi</span>
+            </label>
+          </div>
+        </div>
+      </div>
+    </footer>
+  </div>
+
+  <!-- AI Loading Modal -->
+  <div class="ai-modal" id="ai-modal">
+    <div class="ai-modal-card">
+      <div class="ai-spinner"></div>
+      <h3 id="ai-modal-title">AI ile Çözünürlük Artırılıyor</h3>
+      <p id="ai-modal-desc">Piksel sayısı 4 katına çıkarılıyor (720p ➔ 1080p+)...</p>
+      <div class="ai-progress-track">
+        <div class="ai-progress-fill" id="ai-progress-fill"></div>
+      </div>
+      <span class="ai-progress-text" id="ai-progress-text">0%</span>
+    </div>
+  </div>
+
+  <!-- TensorFlow.js & UpscalerJS (Derin Öğrenme Süper Çözünürlük Motoru) -->
+  <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@latest/dist/tf.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@upscalerjs/default-model@latest/dist/umd/index.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/upscaler@latest/dist/browser/umd/upscaler.min.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
