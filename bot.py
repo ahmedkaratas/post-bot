@@ -162,27 +162,19 @@ def handle_update(update):
         caption = (
             "✨ <b>Instagram Gönderin Hazır!</b>\n"
             f"📐 <b>Ölçü:</b> 1080 × 1350 px (4:5 Dikey)\n"
-            f"🔍 <b>Orijinal Boyut:</b> {orig_size[0]}×{orig_size[1]}\n"
-            f"🎯 <b>Görsel Alanı:</b> {new_size[0]}×{new_size[1]} (Tam Ortalandı)"
+            f"🔍 <b>Orijinal:</b> {orig_size[0]}×{orig_size[1]} ➔ 🎯 <b>Görsel:</b> {new_size[0]}×{new_size[1]} (Tam Ortalandı)\n"
+            "📁 <i>Kayıpsız HD Orijinal PNG (Doğrudan Instagram'a Yüklemeye Hazır)</i>"
         )
 
-        # 1. Hızlı önizleme fotoğrafı gönder
-        output_buffer.seek(0)
-        requests.post(
-            f"{API_URL}/sendPhoto",
-            data={"chat_id": chat_id, "caption": caption, "parse_mode": "HTML", "reply_to_message_id": msg_id},
-            files={"photo": ("preview.jpg", output_buffer.getvalue(), "image/jpeg")},
-            timeout=30
-        )
-
-        # 2. Kaliteden sıfır ödün vermek için sıkıştırmasız PNG Dosyası olarak da gönder
+        # Sadece kayıpsız HD PNG dosyası olarak gönder (Telegram sıkıştırmasını atlar)
         output_buffer.seek(0)
         requests.post(
             f"{API_URL}/sendDocument",
             data={
                 "chat_id": chat_id,
-                "caption": "📁 <b>Kayıpsız HD Orijinal Dosya (Instagram için Direkt Yüklemeye Hazır)</b>",
-                "parse_mode": "HTML"
+                "caption": caption,
+                "parse_mode": "HTML",
+                "reply_to_message_id": msg_id
             },
             files={"document": (file_name, output_buffer.getvalue(), "image/png")},
             timeout=30
