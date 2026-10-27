@@ -13,8 +13,10 @@ import sys
 import json
 import zipfile
 import tempfile
+import threading
 import subprocess
 import requests
+from http.server import HTTPServer, BaseHTTPRequestHandler
 from PIL import Image, ImageOps
 
 BOT_TOKEN = os.getenv("BOT_TOKEN", "8534996297:AAE9K8WOf1tgx_tKsy9jGUV3mlg2hn2plqU")
@@ -35,6 +37,34 @@ def signal_handler(sig, frame):
 
 signal.signal(signal.SIGINT, signal_handler)
 signal.signal(signal.SIGTERM, signal_handler)
+
+class HealthCheckHandler(BaseHTTPRequestHandler):
+    """Koyeb / Cloud platformları için hafif healthcheck web sunucusu."""
+    def do_GET(self):
+        self.send_response(200)
+        self.send_header('Content-type', 'application/json')
+        self.end_headers()
+        self.wfile.write(b'{"status":"ok","service":"instagram-post-bot"}')
+
+    def log_message(self, format, *args):
+        pass
+
+def run_health_server():
+    base_port = int(os.getenv("PORT", "8080"))
+    for port in [base_port, 8088, 8089]:
+        try:
+            server = HTTPServer(('0.0.0.0', port), HealthCheckHandler)
+            print(f"🌐 Cloud Healthcheck sunucusu aktif (Port: {port})")
+            server.serve_forever()
+            break
+        except OSError:
+            if "PORT" in os.environ:
+                print(f"Uyarı: Cloud PORT {base_port} bağlanamadı.")
+                break
+            continue
+        except Exception as e:
+            print(f"Health server hatası: {e}")
+            break
 
 def send_chat_action(chat_id, action="upload_photo"):
     try:
@@ -592,19 +622,11 @@ def handle_tweet_images(chat_id, msg_id, text):
     """Eski /img çağrılarını yeni akıllı /ig motoruna yönlendirir."""
     handle_ig_command(chat_id, msg_id, text)
 
-def handle_ig_command(chat_id, msg_id, raw_input):
+def handle_ig_command(chat_id, msg_id, raw_input, include_comments=True):
     """
-    1000$ Değerinde Akıllı /ig Komutu (veya Doğrudan Twitter Linki):
-    1. Ana tweet'i çeker ve 1080x1350 OLED dark tuvale yerleştirir (01_AnaTweet).
-    2. Popüler yorumları (100+ beğeni, videosuz/gifsiz, max 4, min 1) tarar ve şablonlara dönüştürür.
-       (100+ beğeni yoksa hiç yorum almaz).
-    3. Tweetteki fotoğraf sayısını inceler:
-       - 0 veya 1 fotoğraf varsa: ekstra işlem yapmaz (1 fotoğraf zaten ana şablon kartının içinde yer alır).
-       - 1'den fazla kaydırmalı fotoğraf varsa: her bir orijinal fotoğrafı indirip 1080x1350 tuvale basar.
-    4. Kullanıcıyı mesaj yağmuruna tutmaz:
-       - Tek bir durum mesajı üzerinden süreci adım adım canlı günceller.
-       - Tüm hazır şablonları sırayla tek bir ZIP dosyasında (Instagram_Paketi_<tweet_id>.zip) tek tıkla indirmeye hazır sunar.
-       - Ayrıca Telegram içinde incelemek için tüm slaytları tek bir görsel albüm (sendMediaGroup) olarak iletir.
+    Akıllı Instagram Şablon Motoru:
+    - /ig (veya doğrudan link): Ana tweet + 100+ popüler yorumlar + fotoğraflar (Full paket)
+    - /url (veya /url2): Sadece ana tweet + fotoğraflar (Popüler yorumlara bakmaz)
     """
     send_chat_action(chat_id, "upload_document")
 
@@ -621,17 +643,19 @@ def handle_ig_command(chat_id, msg_id, raw_input):
             tweet_url = f"https://x.com/i/status/{tweet_id}"
             author_handle = "x"
         else:
+            cmd_name = "/url" if not include_comments else "/ig"
             send_message(
                 chat_id,
-                "⚠️ Lütfen geçerli bir Twitter / X linki belirtin.\nÖrnek:\n<code>/ig https://x.com/kullanici/status/1234567890</code>",
+                f"⚠️ Lütfen geçerli bir Twitter / X linki belirtin.\nÖrnek:\n<code>{cmd_name} https://x.com/kullanici/status/1234567890</code>",
                 reply_to_message_id=msg_id
             )
             return
 
     # Canlı dinamik durum mesajı
+    step_total = "4" if include_comments else "3"
     status_resp = send_message(
         chat_id,
-        "⏳ <b>[1/4] Ana tweet şablonu hazırlanıyor...</b>\n<i>Lütfen bekleyin, slaytlar işleniyor.</i>",
+        f"⏳ <b>[1/{step_total}] Ana tweet şablonu hazırlanıyor...</b>\n<i>Lütfen bekleyin, slaytlar işleniyor.</i>",
         reply_to_message_id=msg_id
     )
     status_msg_id = status_resp.json().get("result", {}).get("message_id") if (status_resp and status_resp.status_code == 200) else None
@@ -659,38 +683,36 @@ def handle_ig_command(chat_id, msg_id, raw_input):
             "desc": f"Ana Tweet (@{resolved_handle})"
         })
 
-        # 2. Aşama: Popüler Yorumlar (100+ Beğeni, Videosuz/GIF'siz, Min 1, Max 4)
-        if status_msg_id:
-            edit_message(chat_id, status_msg_id, "🔍 <b>[2/4] Popüler yorumlar taranıyor (100+ beğeni, videosuz/gifsiz)...</b>")
-
-        qualifying_replies = fetch_qualifying_replies(tweet_id, min_likes=100, max_replies=4)
-        for idx, rep in enumerate(qualifying_replies, start=1):
-            rep_id = rep.get("id")
-            rep_author = rep.get("author", {}).get("screen_name", "user")
-            rep_likes = rep.get("likes", 0)
-
+        # 2. Aşama: Popüler Yorumlar (Sadece include_comments=True olduğunda çalışır, /url ile atlanır)
+        qualifying_replies = []
+        if include_comments:
             if status_msg_id:
-                edit_message(chat_id, status_msg_id, f"🎨 <b>Yorum şablonu hazırlanıyor ({idx}/{len(qualifying_replies)})... (@{rep_author} - ❤️ {rep_likes:,})</b>")
+                edit_message(chat_id, status_msg_id, "🔍 <b>[2/4] Popüler yorumlar taranıyor (100+ beğeni, videosuz/gifsiz)...</b>")
 
-            rep_buf, rep_info, rep_err = render_tweet_to_canvas(rep_id, cli_path)
-            if rep_buf and not rep_err:
-                slide_num = len(slides) + 1
-                slides.append({
-                    "filename": f"{slide_num:02d}_Yorum_{rep_author}_{rep_likes}likes.png",
-                    "bytes": rep_buf.getvalue(),
-                    "desc": f"Yorum (@{rep_author} - ❤️ {rep_likes:,})"
-                })
-            else:
-                print(f"Yorum {rep_id} render hatası: {rep_err}")
+            qualifying_replies = fetch_qualifying_replies(tweet_id, min_likes=100, max_replies=4)
+            for idx, rep in enumerate(qualifying_replies, start=1):
+                rep_id = rep.get("id")
+                rep_author = rep.get("author", {}).get("screen_name", "user")
+                rep_likes = rep.get("likes", 0)
+
+                if status_msg_id:
+                    edit_message(chat_id, status_msg_id, f"🎨 <b>Yorum şablonu hazırlanıyor ({idx}/{len(qualifying_replies)})... (@{rep_author} - ❤️ {rep_likes:,})</b>")
+
+                rep_buf, rep_info, rep_err = render_tweet_to_canvas(rep_id, cli_path)
+                if rep_buf and not rep_err:
+                    slide_num = len(slides) + 1
+                    slides.append({
+                        "filename": f"{slide_num:02d}_Yorum_{rep_author}_{rep_likes}likes.png",
+                        "bytes": rep_buf.getvalue(),
+                        "desc": f"Yorum (@{rep_author} - ❤️ {rep_likes:,})"
+                    })
+                else:
+                    print(f"Yorum {rep_id} render hatası: {rep_err}")
 
         # 3. Aşama: Tweet içi fotoğraflar (Kaydırmalı Medya)
-        # Kural:
-        # - 1 foto varsa ve yatay/kare ise ana şablona tam sığar (ekstra slayt gerekmez).
-        # - 1 foto varsa ama dikey/uzun ise (aspect < 0.95), ana şablonda üst kısmı önizleme kalır; 
-        #   kullanıcının tamamını rahat okuyabilmesi için otomatik olarak tam boy 2. slayt olarak eklenir!
-        # - 1'den fazla foto varsa: her biri otomatik olarak 1080x1350 tuvale basılıp slayt yapılır.
+        step_media = "3/4" if include_comments else "2/3"
         if status_msg_id:
-            edit_message(chat_id, status_msg_id, "🖼️ <b>[3/4] Tweet içi fotoğraflar kontrol ediliyor...</b>")
+            edit_message(chat_id, status_msg_id, f"🖼️ <b>[{step_media}] Tweet içi fotoğraflar kontrol ediliyor...</b>")
 
         tweet_media = fetch_tweet_media_info(tweet_id)
         photo_urls = (tweet_media or {}).get("urls", [])
@@ -741,8 +763,9 @@ def handle_ig_command(chat_id, msg_id, raw_input):
         total_slides = len(slides)
 
         # 4. Aşama: Tek tıkla indirme ve albüm teslimatı
+        step_pkg = "4/4" if include_comments else "3/3"
         if status_msg_id:
-            edit_message(chat_id, status_msg_id, f"📦 <b>[4/4] Tüm şablonlar tek pakette birleştiriliyor ({total_slides} slayt)...</b>")
+            edit_message(chat_id, status_msg_id, f"📦 <b>[{step_pkg}] Tüm şablonlar tek pakette birleştiriliyor ({total_slides} slayt)...</b>")
 
         # Tek dosya ise (sadece ana tweet)
         if total_slides == 1:
@@ -778,7 +801,7 @@ def handle_ig_command(chat_id, msg_id, raw_input):
                 f"👤 <b>Yazar:</b> {resolved_name} (@{resolved_handle})\n"
                 f"📊 <b>İçerik:</b> {total_slides} Slayt\n"
                 f" • 📌 1 Ana Tweet Şablonu\n"
-                f" • 💬 {len(slides) - 1 - added_photos} Popüler Yorum (100+ Beğeni)\n"
+                + (f" • 💬 {len(qualifying_replies)} Popüler Yorum (100+ Beğeni)\n" if len(qualifying_replies) > 0 else "")
                 + (f" • 🖼️ {added_photos} Kaydırmalı Fotoğraf\n" if added_photos > 0 else "")
                 + f"📐 <b>Ölçü:</b> 1080 × 1350 px (OLED Siyah)\n"
                 f"📁 <i>Tüm slaytlar sıralı ve kayıpsız HD PNG olarak pakettedir.</i>"
@@ -808,7 +831,7 @@ def handle_ig_command(chat_id, msg_id, raw_input):
             f"👤 <b>Yazar:</b> {resolved_name} (@{resolved_handle})\n"
             f"📊 <b>Toplam:</b> {total_slides} Slayt Hazırlandı\n"
             f" • 1 Ana Tweet\n"
-            f" • {len(slides) - 1 - added_photos} Popüler Yorum (100+ beğeni)\n"
+            + (f" • {len(qualifying_replies)} Popüler Yorum (100+ beğeni)\n" if len(qualifying_replies) > 0 else "")
             + (f" • {added_photos} Kaydırmalı Fotoğraf\n" if added_photos > 0 else "")
             + "📲 <i>ZIP dosyasından tek indirmeyle tüm hazır şablonları alabilir veya albümden sırayla Instagram'a yükleyebilirsiniz.</i>"
         )
@@ -816,7 +839,7 @@ def handle_ig_command(chat_id, msg_id, raw_input):
             edit_message(chat_id, status_msg_id, final_summary)
 
     except Exception as e:
-        print(f"/ig genel işlem hatası: {e}")
+        print(f"İşlem hatası: {e}")
         err_msg = f"❌ İşlem sırasında beklenmeyen bir hata oluştu: {str(e)}"
         if status_msg_id:
             edit_message(chat_id, status_msg_id, err_msg)
@@ -958,35 +981,38 @@ def handle_update(update):
                 "👋 <b>Merhaba! Instagram 1080×1350 Post Botuna Hoş Geldin.</b>\n\n"
                 "📸 <b>Fotoğraf Gönder:</b>\n"
                 "Herhangi bir fotoğraf veya ekran görüntüsü at; kalitesini bozmadan 1080×1350 saf siyah tuval üzerine tam ortalayarak kayıpsız PNG olarak teslim edeyim.\n\n"
-                "💎 <b>Akıllı Instagram Paketi (/ig):</b>\n"
-                "<code>/ig https://x.com/kullanici/status/1234567890</code> şeklinde link at (veya doğrudan linki yapıştır);\n"
+                "💎 <b>Full Instagram Paketi (/ig):</b>\n"
+                "<code>/ig https://x.com/kullanici/status/1234567890</code> (veya doğrudan link at);\n"
                 " • 📌 OLED dark ana tweet şablonunu hazırlar,\n"
-                " • 💬 Varsa 100+ beğeni almış en popüler yorumları (max 4, min 1) şablona dönüştürür (100+ altı yoksa almaz),\n"
-                " • 🖼️ Tweet içinde 1'den fazla kaydırmalı fotoğraf varsa hepsini 1080×1350 tuvale basar,\n"
+                " • 💬 Varsa 100+ beğeni almış en popüler yorumları (max 4, min 1) şablona dönüştürür,\n"
+                " • 🖼️ Tweet içindeki kaydırmalı fotoğrafları 1080×1350 tuvale basar,\n"
                 " • 📦 Tek tıkla indirebileceğin <b>ZIP paketi</b> ve Telegram içi <b>Önizleme Albümü</b> olarak teslim eder!\n\n"
-                "Hemen linkini gönder! 🚀"
+                "⚡ <b>Yorumsuz Hızlı Şablon (/url):</b>\n"
+                "<code>/url https://x.com/kullanici/status/1234567890</code>\n"
+                " • Popüler yorumlara <b>bakmaz</b>; sadece ana tweet'i ve varsa tweet içi fotoğrafları hızlıca hazırlar.\n\n"
+                "Hemen dene! 🚀"
             )
             send_message(chat_id, welcome, reply_to_message_id=msg_id)
             return
 
-        # /ig komutu kontrolü
+        # /ig komutu kontrolü: Popüler yorumlar + fotoğraflar + ana tweet (Full paket)
         if text.startswith("/ig"):
-            handle_ig_command(chat_id, msg_id, text)
+            handle_ig_command(chat_id, msg_id, text, include_comments=True)
+            return
+
+        # /url veya /url2 komutu kontrolü: Popüler yorumlara bakmaz, sadece ana tweet ve fotoğrafları işler
+        if text.startswith("/url2") or text.startswith("/url"):
+            handle_ig_command(chat_id, msg_id, text, include_comments=False)
             return
 
         # /img komutu kontrolü (Geriye dönük uyumluluk)
         if text.startswith("/img"):
-            handle_ig_command(chat_id, msg_id, text)
+            handle_ig_command(chat_id, msg_id, text, include_comments=True)
             return
 
-        # /url2 veya /url komutu kontrolü (Geriye dönük uyumluluk)
-        if text.startswith("/url2") or text.startswith("/url"):
-            handle_ig_command(chat_id, msg_id, text)
-            return
-
-        # Doğrudan atılan Twitter/X linklerini de otomatik algıla
+        # Doğrudan atılan Twitter/X linklerini de otomatik algıla (/ig gibi full çalışır)
         if re.search(r"https?://(?:twitter\.com|x\.com|fixupx\.com|vxtwitter\.com|fxtwitter\.com)/[a-zA-Z0-9_]+/status/\d+", text):
-            handle_ig_command(chat_id, msg_id, text)
+            handle_ig_command(chat_id, msg_id, text, include_comments=True)
             return
 
     file_id = None
@@ -1058,6 +1084,9 @@ def main():
     print("🤖 Instagram Post Telegram Botu Başlatıldı!")
     print(f"🔗 Bot Kullanıcı Adı: @denemekick_bot")
     print("=" * 55)
+
+    # Koyeb / Cloud platformları için hafif healthcheck sunucusunu başlat
+    threading.Thread(target=run_health_server, daemon=True).start()
     print("Mesajlar dinleniyor (Çıkış için Ctrl+C)...")
 
     offset = 0
