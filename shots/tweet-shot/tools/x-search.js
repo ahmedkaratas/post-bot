@@ -46,10 +46,13 @@ async function searchTwitter(query, authToken, ct0, maxWait = 20000) {
     page.setDefaultTimeout(maxWait);
     await page.setViewport({ width: 1280, height: 900 });
 
-    // Doğal Chrome User-Agent
+    // Doğal Chrome User-Agent ve webdriver gizleme
     await page.setUserAgent(
       'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36'
     );
+    await page.evaluateOnNewDocument(() => {
+      Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+    });
 
     // Oturum çerezlerini doğrudan çerez deposuna ekle (CORS hatası yaratmaz)
     const cookiesToSet = [
@@ -60,30 +63,23 @@ async function searchTwitter(query, authToken, ct0, maxWait = 20000) {
     ];
     await page.setCookie(...cookiesToSet);
 
-    // GraphQL SearchTimeline yanıtlarını derinlemesine tara ve yakala
-    page.on('response', async (response) => {
-      const url = response.url();
-      if (url.includes('graphql') || url.includes('SearchTimeline') || url.includes('search')) {
-        try {
-          const json = await response.json();
-          extractTweetsRecursively(json, tweetsFound, seenIds);
-        } catch (_) {}
-      }
-    });
+    // SearchTimeline GraphQL yanıtını sayfa açılmadan ÖNCE dinlemeye başla (en hızlı ve garantili yöntem)
+    const responsePromise = page.waitForResponse(
+      (res) => res.url().includes('SearchTimeline') && res.status() === 200,
+      { timeout: 12000 }
+    ).catch(() => null);
 
-    // Kullanıcının belirttiği f=top arama URL'si
+    // Kullanıcının belirttiği f=top arama URL'sine git
     const searchUrl = `https://x.com/search?q=${encodeURIComponent(query)}&f=top`;
     await page.goto(searchUrl, { waitUntil: 'domcontentloaded', timeout: 15000 }).catch(() => {});
 
-    // SearchTimeline GraphQL yanıtı geldiyse hemen erken çıkış yap (Render CPU'yu kasmadan ~4-5 sn içinde biter)
-    const startWait = Date.now();
-    while (Date.now() - startWait < 8000) {
-      if (tweetsFound.length >= 1) {
-        // İlk paket geldikten sonra tüm tweetler parse edilsin diye 1 sn bekle ve dön
-        await new Promise((r) => setTimeout(r, 1000));
-        break;
-      }
-      await new Promise((r) => setTimeout(r, 400));
+    // SearchTimeline yanıtını bekle (ortalama 2-3 saniyede gelir)
+    const searchRes = await responsePromise;
+    if (searchRes) {
+      try {
+        const json = await searchRes.json();
+        extractTweetsRecursively(json, tweetsFound, seenIds);
+      } catch (_) {}
     }
 
     const currentUrl = page.url();
@@ -102,7 +98,7 @@ async function searchTwitter(query, authToken, ct0, maxWait = 20000) {
 
     // GraphQL yakalanamadıysa DOM makale elemanlarını yedek olarak tara
     if (tweetsFound.length === 0) {
-      await page.waitForSelector('article[data-testid="tweet"]', { timeout: 4000 }).catch(() => {});
+      await page.waitForSelector('article[data-testid="tweet"]', { timeout: 3000 }).catch(() => {});
       const domTweets = await page.$$eval('article[data-testid="tweet"]', (articles) => {
         return articles.map((art) => {
           const links = Array.from(art.querySelectorAll('a[href*="/status/"]'));
@@ -165,7 +161,12 @@ async function searchTwitter(query, authToken, ct0, maxWait = 20000) {
       tweets: tweetsFound,
     };
   } finally {
-    await browser.close().catch(() => {});
+    try {
+      await Promise.race([
+        browser.close(),
+        new Promise((r) => setTimeout(r, 2000))
+      ]);
+    } catch (_) {}
   }
 }
 
@@ -218,12 +219,26 @@ function extractTweetsRecursively(obj, tweetsList, seenIds) {
 }
 
 async function main() {
-  const query = process.argv[2] || 'min_faves:5000 lang:tr';
-  const authToken = process.argv[3] || process.env.TWITTER_AUTH_TOKEN;
-  const ct0 = process.argv[4] || process.env.TWITTER_CT0;
+  const killTimer = setTimeout(() => {
+    console.error('Hard timeout in x-search main (22s)');
+    process.exit(1);
+  }, 22000);
+  killTimer.unref();
 
-  const result = await searchTwitter(query, authToken, ct0);
-  console.log(JSON.stringify(result));
+  try {
+    const query = process.argv[2] || 'min_faves:5000 lang:tr';
+    const authToken = process.argv[3] || process.env.TWITTER_AUTH_TOKEN;
+    const ct0 = process.argv[4] || process.env.TWITTER_CT0;
+
+    const result = await searchTwitter(query, authToken, ct0);
+    console.log(JSON.stringify(result));
+  } catch (err) {
+    console.error('Scraper main hatası:', err);
+    console.log(JSON.stringify({ success: false, error: err.message || String(err), tweets: [] }));
+  } finally {
+    clearTimeout(killTimer);
+    process.exit(0);
+  }
 }
 
 if (require.main === module) {

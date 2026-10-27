@@ -43,6 +43,33 @@ signal.signal(signal.SIGTERM, signal_handler)
 class HealthCheckHandler(BaseHTTPRequestHandler):
     """Koyeb / Cloud platformları için hafif healthcheck web sunucusu."""
     def do_GET(self):
+        if self.path.startswith('/diag'):
+            self.send_response(200)
+            self.send_header('Content-type', 'application/json')
+            self.end_headers()
+            try:
+                from twitter_radar import load_twitter_credentials, SCRAPER_JS
+                auth, ct0 = load_twitter_credentials()
+                t0 = time.time()
+                p = subprocess.run(
+                    ["node", SCRAPER_JS, "min_faves:5000 lang:tr since:2026-10-25", auth, ct0],
+                    capture_output=True,
+                    text=True,
+                    timeout=25
+                )
+                res_data = {
+                    "duration": round(time.time() - t0, 2),
+                    "returncode": p.returncode,
+                    "auth_present": bool(auth),
+                    "ct0_present": bool(ct0),
+                    "stdout_sample": p.stdout[:500] if p.stdout else "",
+                    "stderr_sample": p.stderr[:500] if p.stderr else "",
+                }
+            except Exception as e:
+                res_data = {"error": str(e)}
+            self.wfile.write(json.dumps(res_data).encode("utf-8"))
+            return
+
         self.send_response(200)
         self.send_header('Content-type', 'application/json')
         self.end_headers()
