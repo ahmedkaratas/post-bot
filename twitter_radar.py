@@ -74,22 +74,22 @@ def load_twitter_credentials():
 
     return auth_token, ct0
 
-def get_dynamic_since_date(days_back=2):
+def get_dynamic_since_date(days_back=3):
     """Bugünün tarihinden geriye dönük dinamik since:YYYY-MM-DD oluşturur."""
     dt = datetime.now(timezone.utc) - timedelta(days=days_back)
     return dt.strftime("%Y-%m-%d")
 
-def search_viral_tweets(min_faves=5000, days_back=2):
+def search_viral_tweets(min_faves=5000, days_back=3):
     """
     X üzerinde popüler Türkçe tweetleri arar.
-    Sorgu: min_faves:5000 lang:tr since:YYYY-MM-DD -filter:replies -filter:retweets
+    Sorgu: min_faves:5000 lang:tr since:YYYY-MM-DD
     Dönüş: {"success": bool, "tweets": list, "error": str}
     """
     auth_token, ct0 = load_twitter_credentials()
     if not auth_token or not ct0:
         return {
             "success": False,
-            "error": "Twitter oturum çerezleri (TWITTER_AUTH_TOKEN ve TWITTER_CT0) tanımlanmamış. Lütfen .env veya cookies.json içine ekleyin.",
+            "error": "Twitter oturum çerezleri (TWITTER_AUTH_TOKEN ve TWITTER_CT0) tanımlanmamış. Lütfen .env veya Render ortam değişkenlerine ekleyin.",
             "tweets": []
         }
 
@@ -101,7 +101,7 @@ def search_viral_tweets(min_faves=5000, days_back=2):
             ["node", SCRAPER_JS, query, auth_token, ct0],
             capture_output=True,
             text=True,
-            timeout=75
+            timeout=40
         )
 
         output = res.stdout.strip()
@@ -113,7 +113,7 @@ def search_viral_tweets(min_faves=5000, days_back=2):
         return data
 
     except subprocess.TimeoutExpired:
-        return {"success": False, "error": "Arama işlemi zaman aşımına uğradı (75s)", "tweets": []}
+        return {"success": False, "error": "Arama işlemi zaman aşımına uğradı (40s). X sunucuları yanıt vermedi.", "tweets": []}
     except Exception as e:
         return {"success": False, "error": str(e), "tweets": []}
 

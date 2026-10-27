@@ -105,5 +105,10 @@ class RadarStore:
         self.data["last_run_timestamp"] = int(time.time())
         self._save()
 
+    def touch_last_run(self):
+        """Son çalışma zamanını günceller."""
+        self.data["last_run_timestamp"] = int(time.time())
+        self._save()
+
 # Global tekil örnek
 radar_store = RadarStore()

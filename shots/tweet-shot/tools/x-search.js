@@ -11,7 +11,7 @@
 const puppeteer = require('puppeteer-core');
 const { findChrome } = require('../lib/shot');
 
-async function searchTwitter(query, authToken, ct0, maxWait = 35000) {
+async function searchTwitter(query, authToken, ct0, maxWait = 20000) {
   if (!authToken || !ct0) {
     return {
       success: false,
@@ -31,10 +31,7 @@ async function searchTwitter(query, authToken, ct0, maxWait = 35000) {
       '--disable-setuid-sandbox',
       '--disable-dev-shm-usage',
       '--disable-gpu',
-      '--disable-software-rasterizer',
       '--no-first-run',
-      '--no-zygote',
-      '--single-process',
       '--disable-extensions',
       '--disable-blink-features=AutomationControlled',
       '--window-size=1280,900',
@@ -54,26 +51,16 @@ async function searchTwitter(query, authToken, ct0, maxWait = 35000) {
       'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36'
     );
 
-    // Çerezleri hem doğrudan çerez deposuna ekle hem de HTTP başlıklarına enjekte et
+    // Oturum çerezlerini doğrudan çerez deposuna ekle (CORS hatası yaratmaz)
     const cookiesToSet = [
       { name: 'auth_token', value: authToken, domain: '.x.com', path: '/', secure: true, httpOnly: true },
       { name: 'ct0', value: ct0, domain: '.x.com', path: '/', secure: true },
       { name: 'auth_token', value: authToken, domain: '.twitter.com', path: '/', secure: true, httpOnly: true },
       { name: 'ct0', value: ct0, domain: '.twitter.com', path: '/', secure: true },
     ];
-    await page.setCookie(...cookiesToSet).catch(() => {});
+    await page.setCookie(...cookiesToSet);
 
-    // İlk istekte bile oturumun 100% aktif olması için Cookie header'ını zorla
-    await page.setExtraHTTPHeaders({
-      'Cookie': `auth_token=${authToken}; ct0=${ct0}`,
-      'x-csrf-token': ct0,
-      'x-twitter-active-user': 'yes',
-      'x-twitter-auth-type': 'OAuth2Session',
-      'x-twitter-client-language': 'tr',
-      'Accept-Language': 'tr-TR,tr;q=0.9,en-US;q=0.8,en;q=0.7',
-    }).catch(() => {});
-
-    // GraphQL yanıtlarını derinlemesine (recursive) tara ve yakala
+    // GraphQL SearchTimeline yanıtlarını derinlemesine tara ve yakala
     page.on('response', async (response) => {
       const url = response.url();
       if (url.includes('graphql') || url.includes('SearchTimeline') || url.includes('search')) {
@@ -86,74 +73,88 @@ async function searchTwitter(query, authToken, ct0, maxWait = 35000) {
 
     // Kullanıcının belirttiği f=top arama URL'si
     const searchUrl = `https://x.com/search?q=${encodeURIComponent(query)}&f=top`;
-    await page.goto(searchUrl, { waitUntil: 'domcontentloaded', timeout: maxWait }).catch(() => {});
+    await page.goto(searchUrl, { waitUntil: 'domcontentloaded', timeout: 15000 }).catch(() => {});
 
-    // Sayfadaki tweet makalelerinin belirmesini bekle (Render yavaş CPU için 25s)
-    await page.waitForSelector('article[data-testid="tweet"]', { timeout: 25000 }).catch(() => {});
-
-    // Kısa bir bekleme (GraphQL veya DOM tam yerleşsin)
+    // SearchTimeline GraphQL yanıtı geldiyse hemen erken çıkış yap (Render CPU'yu kasmadan ~4-5 sn içinde biter)
     const startWait = Date.now();
-    while (Date.now() - startWait < 12000) {
-      if (tweetsFound.length >= 1) break;
-      await new Promise((r) => setTimeout(r, 600));
+    while (Date.now() - startWait < 8000) {
+      if (tweetsFound.length >= 1) {
+        // İlk paket geldikten sonra tüm tweetler parse edilsin diye 1 sn bekle ve dön
+        await new Promise((r) => setTimeout(r, 1000));
+        break;
+      }
+      await new Promise((r) => setTimeout(r, 400));
     }
 
-    // DOM üzerinden doğrudan tweetleri oku (Yedek yöntem)
-    const domTweets = await page.$$eval('article[data-testid="tweet"]', (articles) => {
-      return articles.map((art) => {
-        const links = Array.from(art.querySelectorAll('a[href*="/status/"]'));
-        let targetHref = '';
-        for (const l of links) {
-          const h = l.getAttribute('href') || '';
-          if (h.includes('/status/') && !h.includes('/photo/') && !h.includes('/video/')) {
-            targetHref = h;
-            break;
+    const currentUrl = page.url();
+    const pageTitle = await page.title().catch(() => '');
+
+    // Eğer oturum düşmüşse ve login sayfasına yönlendirildiyse net hata dön
+    if (currentUrl.includes('/login') || currentUrl.includes('/i/flow/login')) {
+      return {
+        success: false,
+        error: 'Twitter oturumu geçersiz (Login sayfasına yönlendirildi). Lütfen güncel TWITTER_AUTH_TOKEN ve TWITTER_CT0 çerezlerini girin.',
+        currentUrl,
+        title: pageTitle,
+        tweets: []
+      };
+    }
+
+    // GraphQL yakalanamadıysa DOM makale elemanlarını yedek olarak tara
+    if (tweetsFound.length === 0) {
+      await page.waitForSelector('article[data-testid="tweet"]', { timeout: 4000 }).catch(() => {});
+      const domTweets = await page.$$eval('article[data-testid="tweet"]', (articles) => {
+        return articles.map((art) => {
+          const links = Array.from(art.querySelectorAll('a[href*="/status/"]'));
+          let targetHref = '';
+          for (const l of links) {
+            const h = l.getAttribute('href') || '';
+            if (h.includes('/status/') && !h.includes('/photo/') && !h.includes('/video/')) {
+              targetHref = h;
+              break;
+            }
           }
+          if (!targetHref && links.length > 0) {
+            targetHref = links[0].getAttribute('href') || '';
+          }
+
+          const match = targetHref.match(/\/([a-zA-Z0-9_]+)\/status\/(\d+)/);
+          const textEl = art.querySelector('div[data-testid="tweetText"]');
+
+          return {
+            id: match ? match[2] : null,
+            author: match ? match[1] : '',
+            url: match ? `https://x.com/${match[1]}/status/${match[2]}` : '',
+            text: textEl ? textEl.innerText.trim() : '',
+          };
+        }).filter((t) => t.id && t.author);
+      }).catch(() => []);
+
+      for (const dt of domTweets) {
+        if (!seenIds.has(dt.id)) {
+          seenIds.add(dt.id);
+          tweetsFound.push({
+            id: dt.id,
+            author: dt.author,
+            name: dt.author,
+            text: dt.text,
+            likes: 5000,
+            retweets: 0,
+            url: dt.url,
+            createdAt: '',
+          });
         }
-        if (!targetHref && links.length > 0) {
-          targetHref = links[0].getAttribute('href') || '';
-        }
-
-        const match = targetHref.match(/\/([a-zA-Z0-9_]+)\/status\/(\d+)/);
-        const textEl = art.querySelector('div[data-testid="tweetText"]');
-
-        return {
-          id: match ? match[2] : null,
-          author: match ? match[1] : '',
-          url: match ? `https://x.com/${match[1]}/status/${match[2]}` : '',
-          text: textEl ? textEl.innerText.trim() : '',
-        };
-      }).filter((t) => t.id && t.author);
-    }).catch(() => []);
-
-    // DOM'dan gelen tweetleri ekle
-    for (const dt of domTweets) {
-      if (!seenIds.has(dt.id)) {
-        seenIds.add(dt.id);
-        tweetsFound.push({
-          id: dt.id,
-          author: dt.author,
-          name: dt.author,
-          text: dt.text,
-          likes: 5000,
-          retweets: 0,
-          url: dt.url,
-          createdAt: '',
-        });
       }
     }
 
-    // Beğeniye göre sırala
+    // Beğeniye göre sırala (en popüler en üstte)
     tweetsFound.sort((a, b) => (b.likes || 0) - (a.likes || 0));
-
-    const finalUrl = page.url();
-    const pageTitle = await page.title().catch(() => '');
 
     return {
       success: true,
       query,
       count: tweetsFound.length,
-      currentUrl: finalUrl,
+      currentUrl,
       title: pageTitle,
       tweets: tweetsFound,
     };

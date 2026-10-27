@@ -1053,6 +1053,7 @@ def run_radar_scheduler():
                 now = int(time.time())
 
                 if now - last_run >= interval_secs:
+                    radar_store.touch_last_run()
                     print(f"🛰️ Otomatik Radar tetiklendi (Chat: {cfg['target_chat_id']}, Thread: {cfg['target_thread_id']})...")
                     trigger_radar_delivery(cfg["target_chat_id"], cfg["target_thread_id"])
         except Exception as e:
