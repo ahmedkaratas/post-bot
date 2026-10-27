@@ -200,19 +200,19 @@ def handle_update(update):
                 "📸 <b>Fotoğraf Gönder:</b>\n"
                 "Herhangi bir ekran görüntüsü veya fotoğraf at; kalitesini bozmadan 1080×1350 saf siyah tuvalin ortasına yerleştirip kayıpsız PNG olarak teslim edeyim.\n\n"
                 "🐦 <b>Twitter / X Linki Gönder:</b>\n"
-                "<code>/url https://x.com/kullanici/status/1234567890</code> şeklinde link at; OLED siyah temalı tweet ekran görüntüsü üretip 1080×1350 Instagram postuna dönüştüreyim!\n\n"
+                "<code>/url2 https://x.com/kullanici/status/1234567890</code> şeklinde link at; OLED siyah temalı tweet ekran görüntüsü üretip 1080×1350 Instagram postuna dönüştüreyim!\n\n"
                 "Hemen dene! 🚀"
             )
             send_message(chat_id, welcome, reply_to_message_id=msg_id)
             return
 
-        # /url komutu kontrolü (Mevcut kod ve düzeni bozmadan çalışır)
-        if text.startswith("/url"):
+        # /url2 komutu kontrolü (Mevcut kod ve düzeni bozmadan çalışır)
+        if text.startswith("/url2"):
             parts = text.split(maxsplit=1)
             if len(parts) < 2 or not parts[1].strip():
                 send_message(
                     chat_id,
-                    "⚠️ Lütfen bir Twitter / X linki belirtin.\nÖrnek:\n<code>/url https://x.com/kullanici/status/1234567890</code>",
+                    "⚠️ Lütfen bir Twitter / X linki belirtin.\nÖrnek:\n<code>/url2 https://x.com/kullanici/status/1234567890</code>",
                     reply_to_message_id=msg_id
                 )
                 return
