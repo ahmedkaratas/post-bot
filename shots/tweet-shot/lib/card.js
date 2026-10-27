@@ -71,7 +71,8 @@ function displayUrl(url) {
 }
 
 function renderText(text) {
-  const paragraphs = String(text || '')
+  if (!text || !text.trim()) return '';
+  const paragraphs = String(text)
     .replace(/\r\n?/g, '\n')
     .split(/\n{2,}/);
   return paragraphs
@@ -84,7 +85,7 @@ function renderText(text) {
         .replace(/(^|[\s(])(@[A-Za-z0-9_]{1,15})/g, '$1<span class="link">$2</span>')
         .replace(/(^|[\s(])(#[\p{L}\p{N}_]+)/gu, '$1<span class="link">$2</span>')
         .replace(/\n/g, '<br>');
-      return `<p>${html || '&nbsp;'}</p>`;
+      return `<p>${html}</p>`;
     })
     .join('');
 }
@@ -232,7 +233,7 @@ function renderCard(tweet, opts) {
       <div class="brand"><svg viewBox="0 0 24 24" width="30" height="30" fill="currentColor"><path d="${X_LOGO}"/></svg></div>
     </div>
 
-    <div class="text">${renderText(tweet.text)}</div>
+    ${tweet.text && tweet.text.trim() ? `<div class="text">${renderText(tweet.text)}</div>` : ''}
     ${quoteBlock(tweet.quote, opts)}
     ${opts.media ? mediaBlock(tweet.media || []) : ''}
     ${pollBlock(tweet.poll)}
@@ -296,8 +297,8 @@ function css(opts) {
 *{box-sizing:border-box;-webkit-font-smoothing:antialiased;text-rendering:geometricPrecision}
 html,body{margin:0;padding:0;background:${oled ? '#000000' : dark ? '#0b0b0c' : '#fcfcfb'}}
 body{font-family:'Chirp','TwitterChirp','Helvetica Neue',Helvetica,Arial,sans-serif;color:var(--text)}
-#shot{width:540px;background:var(--bg);padding:${oled ? '16px 20px' : '12px 20px 14px'};}
-.card{background:var(--card);padding:${oled ? '24px 20px' : '32px'};box-shadow:var(--shadow);border-radius:${oled ? '0px' : '2px'}}
+#shot{width:540px;background:var(--bg);padding:${oled ? '8px 10px' : '12px 20px 14px'};}
+.card{background:var(--card);padding:${oled ? '12px 10px' : '32px'};box-shadow:var(--shadow);border-radius:${oled ? '0px' : '2px'}}
 
 .head{display:flex;align-items:center}
 .avatar{width:40px;height:40px;border-radius:50%;object-fit:cover;margin-right:8px;background:var(--line);flex:none}

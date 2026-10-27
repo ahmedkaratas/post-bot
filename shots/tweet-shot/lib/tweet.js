@@ -119,10 +119,15 @@ function normalizeFx(payload) {
     };
   }
 
+  const rawText = t.text || '';
+  const cleanedText = (media.length > 0)
+    ? rawText.replace(/\s*https?:\/\/t\.co\/[a-zA-Z0-9]+\s*$/i, '')
+    : rawText;
+
   return {
     id: String(t.id),
     url: t.url || `https://x.com/i/status/${t.id}`,
-    text: t.text || '',
+    text: cleanedText,
     lang: t.lang || 'en',
     createdAt: t.created_timestamp ? new Date(t.created_timestamp * 1000).toISOString() : null,
     author: {
@@ -209,12 +214,17 @@ function normalizeSyndication(payload) {
     };
   }
 
+  const rawText = payload.text || '';
+  const cleanedText = (media.length > 0)
+    ? rawText.replace(/\s*https?:\/\/t\.co\/[a-zA-Z0-9]+\s*$/i, '')
+    : rawText;
+
   return {
     id: String(payload.id_str),
     url: u.screen_name
       ? `https://x.com/${u.screen_name}/status/${payload.id_str}`
       : `https://x.com/i/status/${payload.id_str}`,
-    text: payload.text || '',
+    text: cleanedText,
     lang: payload.lang || 'en',
     createdAt: payload.created_at || null,
     author: {
@@ -248,7 +258,7 @@ async function fetchTweet(id) {
     try {
       const data = await getJson(`https://${host}/i/status/${id}`);
       const tweet = normalizeFx(data);
-      if (tweet && tweet.text) return tweet;
+      if (tweet && (tweet.text || (tweet.media && tweet.media.length) || tweet.quote)) return tweet;
       errors.push(`${host}: empty payload`);
     } catch (e) {
       errors.push(`${host}: ${e.message}`);

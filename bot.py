@@ -6,10 +6,12 @@ Bot Name: igfoto (@denemekick_bot)
 
 import os
 import io
+import re
 import time
 import signal
 import sys
 import json
+import zipfile
 import tempfile
 import subprocess
 import requests
@@ -53,6 +55,67 @@ def send_message(chat_id, text, reply_to_message_id=None):
     except Exception as e:
         print(f"Mesaj gönderme hatası: {e}")
         return None
+
+def edit_message(chat_id, message_id, text):
+    try:
+        payload = {
+            "chat_id": chat_id,
+            "message_id": message_id,
+            "text": text,
+            "parse_mode": "HTML"
+        }
+        return requests.post(f"{API_URL}/editMessageText", json=payload, timeout=10)
+    except Exception as e:
+        print(f"Mesaj güncelleme hatası: {e}")
+        return None
+
+def is_video_or_gif(reply):
+    """
+    Yorumda video veya GIF olup olmadığını denetler.
+    Yalnızca düz metin veya resim (fotoğraf) olanlar kabul edilir.
+    """
+    media = reply.get("media")
+    if not media:
+        return False
+    if media.get("videos") or media.get("external"):
+        return True
+    for item in media.get("all", []):
+        if item.get("type") in ("video", "gif", "animated_gif"):
+            return True
+    for p in media.get("photos", []):
+        if p.get("type") in ("gif", "animated_gif"):
+            return True
+    return False
+
+def fetch_qualifying_replies(tweet_id, min_likes=100, max_replies=4):
+    """
+    Tweetin yorumlarını çeker.
+    - Min 100 beğeni
+    - Video ve GIF içermeyen (sadece resim veya düz metin)
+    - Beğeni sayısına göre büyükten küçüğe sıralı
+    - 100 üzeri 0 ise boş liste, 1 ise 1 tane, daha fazla ise en fazla 4 tane döner.
+    """
+    url = f"https://api.fxtwitter.com/2/conversation/{tweet_id}"
+    try:
+        resp = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=15)
+        if resp.status_code != 200:
+            return []
+        data = resp.json()
+        replies = data.get("replies", [])
+        qualifying = [
+            r for r in replies
+            if (r.get("likes") or 0) >= min_likes and not is_video_or_gif(r)
+        ]
+        qualifying.sort(key=lambda x: x.get("likes", 0), reverse=True)
+        if len(qualifying) == 0:
+            return []
+        elif len(qualifying) == 1:
+            return qualifying[:1]
+        else:
+            return qualifying[:max_replies]
+    except Exception as e:
+        print(f"Yorumları çekme hatası: {e}")
+        return []
 
 def process_image(image_bytes):
     """
@@ -99,21 +162,18 @@ def process_image(image_bytes):
         
         return out_buf, (orig_w, orig_h), (new_w, new_h)
 
-def handle_tweet_url(chat_id, msg_id, tweet_url):
+def render_tweet_to_canvas(tweet_input, cli_path):
     """
-    /url komutuyla gelen Twitter/X linkini tweet-shot üzerinden
-    OLED Dark temalı ekran görüntüsüne çevirir ve 1080x1350 siyah tuvale yerleştirir.
+    tweet-shot CLI ile tweet'in OLED dark ekran görüntüsünü alır ve
+    1080x1350 saf siyah tuval üzerine yerleştirir.
+    Dönüş: (output_buffer, tweet_info, error_msg)
     """
-    send_chat_action(chat_id, "upload_document")
-
     temp_dir = tempfile.gettempdir()
-    temp_out = os.path.join(temp_dir, f"tweet_{int(time.time() * 1000)}.png")
-    cli_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "shots", "tweet-shot", "cli.js")
+    temp_out = os.path.join(temp_dir, f"tweet_{int(time.time() * 1000)}_{os.getpid()}.png")
 
     try:
-        # tweet-shot CLI ile tweet ekran görüntüsü oluştur
         res = subprocess.run(
-            ["node", cli_path, tweet_url, temp_out],
+            ["node", cli_path, str(tweet_input), temp_out],
             capture_output=True,
             text=True,
             timeout=45
@@ -126,8 +186,7 @@ def handle_tweet_url(chat_id, msg_id, tweet_url):
                 err_msg = err_json.get("error", err_msg)
             except Exception:
                 pass
-            send_message(chat_id, f"❌ Tweet dönüştürülemedi: {err_msg}", reply_to_message_id=msg_id)
-            return
+            return None, None, err_msg
 
         tweet_info = {}
         try:
@@ -139,49 +198,722 @@ def handle_tweet_url(chat_id, msg_id, tweet_url):
             pass
 
         if not os.path.exists(temp_out):
-            send_message(chat_id, "❌ Tweet ekran görüntüsü oluşturulamadı.", reply_to_message_id=msg_id)
-            return
+            return None, None, "Tweet ekran görüntüsü dosyası oluşturulamadı."
 
         with open(temp_out, "rb") as f:
             tweet_png_data = f.read()
 
-        # Var olan 1080x1350 siyah tuval algoritmasını birebir uygula
-        output_buffer, orig_size, new_size = process_image(tweet_png_data)
-
-        author_str = f"@{tweet_info.get('author')}" if tweet_info.get('author') else "X / Twitter"
-        name_str = tweet_info.get("name", "Tweet")
-
-        caption = (
-            "✨ <b>Instagram Tweet Gönderin Hazır!</b>\n"
-            f"👤 <b>Yazar:</b> {name_str} ({author_str})\n"
-            f"📐 <b>Ölçü:</b> 1080 × 1350 px (OLED Siyah Arka Plan)\n"
-            "📁 <i>Kayıpsız HD Orijinal PNG (Instagram'a Yüklemeye Hazır)</i>"
-        )
-
-        output_buffer.seek(0)
-        requests.post(
-            f"{API_URL}/sendDocument",
-            data={
-                "chat_id": chat_id,
-                "caption": caption,
-                "parse_mode": "HTML",
-                "reply_to_message_id": msg_id
-            },
-            files={"document": (f"tweet_{tweet_info.get('id', 'post')}.png", output_buffer.getvalue(), "image/png")},
-            timeout=30
-        )
+        out_buffer, orig_size, new_size = process_image(tweet_png_data)
+        return out_buffer, tweet_info, None
 
     except subprocess.TimeoutExpired:
-        send_message(chat_id, "⏱️ Tweet yüklenirken zaman aşımı oluştu. Lütfen linki kontrol edip tekrar deneyin.", reply_to_message_id=msg_id)
+        return None, None, "Zaman aşımı (45s)"
     except Exception as e:
-        print(f"Tweet işleme hatası: {e}")
-        send_message(chat_id, f"❌ Tweet işlenirken hata oluştu: {str(e)}", reply_to_message_id=msg_id)
+        return None, None, str(e)
     finally:
         if os.path.exists(temp_out):
             try:
                 os.remove(temp_out)
             except Exception:
                 pass
+
+def handle_tweet_url(chat_id, msg_id, raw_input):
+    """
+    /url2 komutu ile gelen linki işler:
+    1. Ana tweet'i 1080x1350 OLED dark tuvale yerleştirir.
+    2. Tweet'in yorumlarını tarar (Min 100 beğeni, videosuz/gifsiz, en çok beğenilen max 4 yorum).
+    3. Her yorumu da otomatik olarak /url2 gibi işler ve görsele dönüştürür.
+    4. Tüm slaytları kayıpsız dosya formatında alt alta profesyonelce kullanıcıya teslim eder.
+    """
+    send_chat_action(chat_id, "upload_document")
+
+    # URL ve Tweet ID tespiti (Tekrarlanan komut veya ek parametrelere karşı korumalı)
+    url_match = re.search(r"https?://(?:twitter\.com|x\.com|fixupx\.com|vxtwitter\.com|fxtwitter\.com)/([a-zA-Z0-9_]+)/status/(\d+)", raw_input)
+    if url_match:
+        author_handle = url_match.group(1)
+        tweet_id = url_match.group(2)
+        tweet_url = f"https://x.com/{author_handle}/status/{tweet_id}"
+    else:
+        id_match = re.search(r"\b(\d{15,25})\b", raw_input)
+        if id_match:
+            tweet_id = id_match.group(1)
+            tweet_url = f"https://x.com/i/status/{tweet_id}"
+        else:
+            send_message(
+                chat_id,
+                "⚠️ Lütfen geçerli bir Twitter / X linki belirtin.\nÖrnek:\n<code>/url2 https://x.com/kullanici/status/1234567890</code>",
+                reply_to_message_id=msg_id
+            )
+            return
+
+    # Durum mesajı başlat
+    status_resp = send_message(
+        chat_id,
+        "⏳ <b>Tweet ve popüler yorumlar taranıyor...</b>\n<i>Lütfen bekleyin, slaytlar hazırlanıyor.</i>",
+        reply_to_message_id=msg_id
+    )
+    status_msg_id = status_resp.json().get("result", {}).get("message_id") if (status_resp and status_resp.status_code == 200) else None
+
+    cli_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "shots", "tweet-shot", "cli.js")
+
+    try:
+        # 1. Ana Tweet'i oluştur
+        if status_msg_id:
+            edit_message(chat_id, status_msg_id, "🎨 <b>[1/?] Ana Tweet hazırlanıyor...</b>")
+
+        main_buf, main_info, main_err = render_tweet_to_canvas(tweet_url, cli_path)
+        if main_err or not main_buf:
+            err_text = f"❌ Ana tweet dönüştürülemedi: {main_err}"
+            if status_msg_id:
+                edit_message(chat_id, status_msg_id, err_text)
+            else:
+                send_message(chat_id, err_text, reply_to_message_id=msg_id)
+            return
+
+        # 2. Yorumları tara ve uygun olanları seç
+        if status_msg_id:
+            edit_message(chat_id, status_msg_id, "🔍 <b>Yorumlar taranıyor (Min 100 beğeni, videosuz/gifsiz)...</b>")
+
+        qualifying_replies = fetch_qualifying_replies(tweet_id, min_likes=100, max_replies=4)
+        total_slides = 1 + len(qualifying_replies)
+
+        slides_to_send = []
+        # Ana Tweet Slaytı
+        slides_to_send.append({
+            "type": "main",
+            "buffer": main_buf,
+            "info": main_info,
+            "likes": None,
+            "author": main_info.get("author", "X"),
+            "name": main_info.get("name", "Tweet")
+        })
+
+        # 3. Uygun yorumları slaytlara dönüştür
+        for idx, rep in enumerate(qualifying_replies, start=2):
+            rep_id = rep.get("id")
+            rep_author = rep.get("author", {}).get("screen_name", "user")
+            rep_likes = rep.get("likes", 0)
+
+            if status_msg_id:
+                edit_message(chat_id, status_msg_id, f"🎨 <b>[{idx}/{total_slides}] Popüler Yorum hazırlanıyor...</b> (@{rep_author} - ❤️ {rep_likes:,} beğeni)")
+
+            rep_buf, rep_info, rep_err = render_tweet_to_canvas(rep_id, cli_path)
+            if rep_buf and not rep_err:
+                slides_to_send.append({
+                    "type": "reply",
+                    "buffer": rep_buf,
+                    "info": rep_info or {},
+                    "likes": rep_likes,
+                    "author": (rep_info or {}).get("author", rep_author),
+                    "name": (rep_info or {}).get("name", rep_author)
+                })
+            else:
+                print(f"Yorum {rep_id} render edilemedi: {rep_err}")
+
+        # Gerçek başarılı toplam slayt sayısı
+        actual_total = len(slides_to_send)
+
+        # 4. Tüm slaytları kayıpsız dosya (PNG) olarak alt alta gönder
+        if status_msg_id:
+            edit_message(chat_id, status_msg_id, f"🚀 <b>Tüm slaytlar ({actual_total} adet) iletiliyor...</b>")
+
+        for i, slide in enumerate(slides_to_send, start=1):
+            slide_buf = slide["buffer"]
+            author_str = slide["author"]
+            name_str = slide["name"]
+
+            if slide["type"] == "main":
+                caption = (
+                    f"📌 <b>[Slayt {i}/{actual_total}] Ana Tweet</b>\n"
+                    f"👤 <b>Yazar:</b> {name_str} (@{author_str})\n"
+                    f"📐 <b>Ölçü:</b> 1080 × 1350 px (OLED Siyah Arka Plan)\n"
+                    "📁 <i>Kayıpsız HD Orijinal PNG (Instagram'a Hazır)</i>"
+                )
+                filename = f"01_AnaTweet_{author_str}.png"
+            else:
+                likes_str = f"{slide['likes']:,}" if slide['likes'] is not None else "100+"
+                caption = (
+                    f"💬 <b>[Slayt {i}/{actual_total}] Popüler Yorum</b>\n"
+                    f"👤 <b>Yazar:</b> {name_str} (@{author_str})\n"
+                    f"🔥 <b>Etkileşim:</b> ❤️ {likes_str} Beğeni\n"
+                    f"📐 <b>Ölçü:</b> 1080 × 1350 px (OLED Siyah Arka Plan)\n"
+                    "📁 <i>Kayıpsız HD Orijinal PNG (Instagram'a Hazır)</i>"
+                )
+                filename = f"{i:02d}_Yorum_{author_str}_{slide.get('likes', 0)}likes.png"
+
+            slide_buf.seek(0)
+            requests.post(
+                f"{API_URL}/sendDocument",
+                data={
+                    "chat_id": chat_id,
+                    "caption": caption,
+                    "parse_mode": "HTML",
+                    "reply_to_message_id": msg_id
+                },
+                files={"document": (filename, slide_buf.getvalue(), "image/png")},
+                timeout=30
+            )
+
+        # 5. Bitiş durum güncellemesi
+        if len(qualifying_replies) > 0:
+            final_text = (
+                f"🎉 <b>Instagram Kaydırmalı Gönderi Paketi Hazır!</b>\n\n"
+                f"📊 <b>İçerik:</b> 1 Ana Tweet + {len(slides_to_send) - 1} Popüler Yorum (Toplam {actual_total} slayt)\n"
+                f"🎯 <b>Filtre:</b> Min 100 beğeni, videosuz ve gifsiz orijinal yorumlar seçildi.\n"
+                f"📲 <i>Instagram'a yüklerken sırasıyla (1, 2, 3...) seçerek tam uyumlu kaydırmalı post paylaşabilirsiniz.</i>"
+            )
+        else:
+            final_text = (
+                f"✨ <b>Ana Tweet Başarıyla Gönderildi!</b>\n\n"
+                f"ℹ️ <i>Bu tweet altında 100+ beğeni alan (ve videosuz/gifsiz) yorum bulunmadığı için sadece ana tweet iletildi.</i>"
+            )
+
+        if status_msg_id:
+            edit_message(chat_id, status_msg_id, final_text)
+
+    except Exception as e:
+        print(f"Genel işlem hatası: {e}")
+        err_msg = f"❌ İşlem sırasında beklenmeyen bir hata oluştu: {str(e)}"
+        if status_msg_id:
+            edit_message(chat_id, status_msg_id, err_msg)
+        else:
+            send_message(chat_id, err_msg, reply_to_message_id=msg_id)
+
+def extract_tweet_id(text):
+    """Tweet linkinden veya metinden tweet ID'sini ayıklar."""
+    if not text:
+        return None
+    raw = str(text).strip()
+    if raw.startswith("/img"):
+        parts = raw.split(maxsplit=1)
+        if len(parts) > 1:
+            raw = parts[1].strip()
+        else:
+            return None
+    match = re.search(r'(?:status|statuses|i/status)/(\d{1,25})', raw, re.IGNORECASE)
+    if match:
+        return match.group(1)
+    if raw.isdigit():
+        return raw
+    loose = re.search(r'status(?:es)?/(\d{1,25})', raw, re.IGNORECASE)
+    if loose:
+        return loose.group(1)
+    return None
+
+def maximize_twitter_image_url(url):
+    """Twitter görsel URL'sini en yüksek orijinal çözünürlüğe (?name=orig) ayarlar."""
+    if not url:
+        return url
+    if "pbs.twimg.com" in url:
+        if "name=" in url:
+            return re.sub(r'name=[a-zA-Z0-9_]+', 'name=orig', url)
+        else:
+            sep = "&" if "?" in url else "?"
+            return f"{url}{sep}name=orig"
+    return url
+
+def fetch_tweet_media_info(tweet_id):
+    """
+    Tweet ID'sine göre tweet içerisindeki fotoğrafları ve yazar bilgilerini çeker.
+    Çok katmanlı yedekleme: fxtwitter -> vxtwitter -> node lib/tweet.js (syndication)
+    """
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
+        "Accept": "application/json"
+    }
+
+    # 1. Kaynak: api.fxtwitter.com
+    try:
+        resp = requests.get(f"https://api.fxtwitter.com/i/status/{tweet_id}", headers=headers, timeout=10)
+        if resp.status_code == 200:
+            data = resp.json()
+            tweet = data.get("tweet", {})
+            media = tweet.get("media", {})
+            raw_photos = media.get("photos", []) or [m for m in media.get("all", []) if m.get("type") == "photo"]
+            urls = [maximize_twitter_image_url(p.get("url")) for p in raw_photos if p.get("url")]
+            if urls:
+                return {
+                    "id": tweet_id,
+                    "urls": urls,
+                    "author": tweet.get("author", {}).get("screen_name", ""),
+                    "name": tweet.get("author", {}).get("name", "")
+                }
+    except Exception as e:
+        print(f"fxtwitter fetch hatası: {e}")
+
+    # 2. Kaynak: api.vxtwitter.com
+    try:
+        resp = requests.get(f"https://api.vxtwitter.com/i/status/{tweet_id}", headers=headers, timeout=10)
+        if resp.status_code == 200:
+            data = resp.json()
+            media = data.get("media_extended", []) or []
+            urls = [maximize_twitter_image_url(m.get("url")) for m in media if m.get("type") == "image"]
+            if urls:
+                return {
+                    "id": tweet_id,
+                    "urls": urls,
+                    "author": data.get("user_screen_name", ""),
+                    "name": data.get("user_name", "")
+                }
+    except Exception as e:
+        print(f"vxtwitter fetch hatası: {e}")
+
+    # 3. Kaynak: shots/tweet-shot/lib/tweet.js (Node.js & syndication twimg)
+    try:
+        shots_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "shots", "tweet-shot")
+        node_script = f"""
+        const {{ fetchTweet }} = require('./lib/tweet');
+        fetchTweet('{tweet_id}').then(t => {{
+            const photos = (t.media || []).filter(m => m.type === 'photo').map(m => m.url);
+            console.log(JSON.stringify({{
+                id: t.id,
+                urls: photos,
+                author: (t.author && t.author.handle) || '',
+                name: (t.author && t.author.name) || ''
+            }}));
+        }}).catch(e => {{
+            console.error(JSON.stringify({{ error: e.message }}));
+            process.exit(1);
+        }});
+        """
+        res = subprocess.run(
+            ["node", "-e", node_script],
+            cwd=shots_dir,
+            capture_output=True,
+            text=True,
+            timeout=15
+        )
+        if res.returncode == 0 and res.stdout.strip():
+            node_data = json.loads(res.stdout.strip())
+            urls = [maximize_twitter_image_url(u) for u in node_data.get("urls", []) if u]
+            if urls:
+                return {
+                    "id": tweet_id,
+                    "urls": urls,
+                    "author": node_data.get("author", ""),
+                    "name": node_data.get("name", "")
+                }
+    except Exception as e:
+        print(f"Node fallback fetch hatası: {e}")
+
+    return None
+
+def send_documents_batch(chat_id, files_data, caption=None, reply_to_message_id=None):
+    """
+    Görselleri Telegram'a toplu dosya (sendMediaGroup veya sendDocument) olarak gönderir.
+    files_data: [(file_name, bytes_data), ...]
+    """
+    total = len(files_data)
+    if total == 0:
+        return
+
+    # Tek dosya varsa sendDocument ile gönderilir (Telegram kuralları gereği sendMediaGroup en az 2 öğe ister)
+    if total == 1:
+        fname, fbytes = files_data[0]
+        data = {
+            "chat_id": chat_id,
+            "caption": caption or "",
+            "parse_mode": "HTML",
+        }
+        if reply_to_message_id:
+            data["reply_to_message_id"] = reply_to_message_id
+        requests.post(
+            f"{API_URL}/sendDocument",
+            data=data,
+            files={"document": (fname, fbytes, "image/png")},
+            timeout=40
+        )
+        return
+
+    # 2 veya daha fazla dosya: 10'arlı gruplara bölerek sendMediaGroup (InputMediaDocument) ile gönder
+    chunk_size = 10
+    for chunk_idx in range(0, total, chunk_size):
+        chunk = files_data[chunk_idx:chunk_idx + chunk_size]
+
+        if len(chunk) == 1:
+            fname, fbytes = chunk[0]
+            requests.post(
+                f"{API_URL}/sendDocument",
+                data={"chat_id": chat_id, "parse_mode": "HTML"},
+                files={"document": (fname, fbytes, "image/png")},
+                timeout=40
+            )
+            continue
+
+        media_list = []
+        files = {}
+        for i, (fname, fbytes) in enumerate(chunk):
+            attach_name = f"doc_{i}"
+            item = {
+                "type": "document",
+                "media": f"attach://{attach_name}"
+            }
+            if chunk_idx == 0 and i == 0 and caption:
+                item["caption"] = caption
+                item["parse_mode"] = "HTML"
+            media_list.append(item)
+            files[attach_name] = (fname, fbytes, "image/png")
+
+        payload = {
+            "chat_id": chat_id,
+            "media": json.dumps(media_list)
+        }
+        if reply_to_message_id and chunk_idx == 0:
+            payload["reply_to_message_id"] = reply_to_message_id
+
+        success = False
+        try:
+            resp = requests.post(f"{API_URL}/sendMediaGroup", data=payload, files=files, timeout=60)
+            res_json = resp.json()
+            if res_json.get("ok"):
+                success = True
+            else:
+                print(f"sendMediaGroup yanıtı olumsuz ({res_json.get('description')}), tek tek sendDocument fallback devrede...")
+        except Exception as e:
+            print(f"sendMediaGroup bağlantı hatası: {e}, tek tek sendDocument fallback devrede...")
+
+        # Eğer sendMediaGroup herhangi bir sebeple başarısız olursa tek tek sendDocument ile gönder
+        if not success:
+            for i, (fname, fbytes) in enumerate(chunk):
+                doc_cap = caption if (chunk_idx == 0 and i == 0) else None
+                p = {"chat_id": chat_id, "parse_mode": "HTML"}
+                if doc_cap:
+                    p["caption"] = doc_cap
+                if reply_to_message_id and chunk_idx == 0 and i == 0:
+                    p["reply_to_message_id"] = reply_to_message_id
+                requests.post(
+                    f"{API_URL}/sendDocument",
+                    data=p,
+                    files={"document": (fname, fbytes, "image/png")},
+                    timeout=30
+                )
+
+def handle_tweet_images(chat_id, msg_id, text):
+    """Eski /img çağrılarını yeni akıllı /ig motoruna yönlendirir."""
+    handle_ig_command(chat_id, msg_id, text)
+
+def handle_ig_command(chat_id, msg_id, raw_input):
+    """
+    1000$ Değerinde Akıllı /ig Komutu (veya Doğrudan Twitter Linki):
+    1. Ana tweet'i çeker ve 1080x1350 OLED dark tuvale yerleştirir (01_AnaTweet).
+    2. Popüler yorumları (100+ beğeni, videosuz/gifsiz, max 4, min 1) tarar ve şablonlara dönüştürür.
+       (100+ beğeni yoksa hiç yorum almaz).
+    3. Tweetteki fotoğraf sayısını inceler:
+       - 0 veya 1 fotoğraf varsa: ekstra işlem yapmaz (1 fotoğraf zaten ana şablon kartının içinde yer alır).
+       - 1'den fazla kaydırmalı fotoğraf varsa: her bir orijinal fotoğrafı indirip 1080x1350 tuvale basar.
+    4. Kullanıcıyı mesaj yağmuruna tutmaz:
+       - Tek bir durum mesajı üzerinden süreci adım adım canlı günceller.
+       - Tüm hazır şablonları sırayla tek bir ZIP dosyasında (Instagram_Paketi_<tweet_id>.zip) tek tıkla indirmeye hazır sunar.
+       - Ayrıca Telegram içinde incelemek için tüm slaytları tek bir görsel albüm (sendMediaGroup) olarak iletir.
+    """
+    send_chat_action(chat_id, "upload_document")
+
+    # URL ve Tweet ID tespiti
+    url_match = re.search(r"https?://(?:twitter\.com|x\.com|fixupx\.com|vxtwitter\.com|fxtwitter\.com)/([a-zA-Z0-9_]+)/status/(\d+)", raw_input)
+    if url_match:
+        author_handle = url_match.group(1)
+        tweet_id = url_match.group(2)
+        tweet_url = f"https://x.com/{author_handle}/status/{tweet_id}"
+    else:
+        id_match = re.search(r"\b(\d{15,25})\b", raw_input)
+        if id_match:
+            tweet_id = id_match.group(1)
+            tweet_url = f"https://x.com/i/status/{tweet_id}"
+            author_handle = "x"
+        else:
+            send_message(
+                chat_id,
+                "⚠️ Lütfen geçerli bir Twitter / X linki belirtin.\nÖrnek:\n<code>/ig https://x.com/kullanici/status/1234567890</code>",
+                reply_to_message_id=msg_id
+            )
+            return
+
+    # Canlı dinamik durum mesajı
+    status_resp = send_message(
+        chat_id,
+        "⏳ <b>[1/4] Ana tweet şablonu hazırlanıyor...</b>\n<i>Lütfen bekleyin, slaytlar işleniyor.</i>",
+        reply_to_message_id=msg_id
+    )
+    status_msg_id = status_resp.json().get("result", {}).get("message_id") if (status_resp and status_resp.status_code == 200) else None
+
+    cli_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "shots", "tweet-shot", "cli.js")
+    slides = []  # list of dicts: {"filename": str, "bytes": bytes, "desc": str}
+
+    try:
+        # 1. Aşama: Ana Tweet
+        main_buf, main_info, main_err = render_tweet_to_canvas(tweet_url, cli_path)
+        if main_err or not main_buf:
+            err_text = f"❌ Ana tweet oluşturulamadı: {main_err}"
+            if status_msg_id:
+                edit_message(chat_id, status_msg_id, err_text)
+            else:
+                send_message(chat_id, err_text, reply_to_message_id=msg_id)
+            return
+
+        resolved_handle = (main_info or {}).get("author") or author_handle
+        resolved_name = (main_info or {}).get("name") or resolved_handle
+
+        slides.append({
+            "filename": f"01_AnaTweet_{resolved_handle}.png",
+            "bytes": main_buf.getvalue(),
+            "desc": f"Ana Tweet (@{resolved_handle})"
+        })
+
+        # 2. Aşama: Popüler Yorumlar (100+ Beğeni, Videosuz/GIF'siz, Min 1, Max 4)
+        if status_msg_id:
+            edit_message(chat_id, status_msg_id, "🔍 <b>[2/4] Popüler yorumlar taranıyor (100+ beğeni, videosuz/gifsiz)...</b>")
+
+        qualifying_replies = fetch_qualifying_replies(tweet_id, min_likes=100, max_replies=4)
+        for idx, rep in enumerate(qualifying_replies, start=1):
+            rep_id = rep.get("id")
+            rep_author = rep.get("author", {}).get("screen_name", "user")
+            rep_likes = rep.get("likes", 0)
+
+            if status_msg_id:
+                edit_message(chat_id, status_msg_id, f"🎨 <b>Yorum şablonu hazırlanıyor ({idx}/{len(qualifying_replies)})... (@{rep_author} - ❤️ {rep_likes:,})</b>")
+
+            rep_buf, rep_info, rep_err = render_tweet_to_canvas(rep_id, cli_path)
+            if rep_buf and not rep_err:
+                slide_num = len(slides) + 1
+                slides.append({
+                    "filename": f"{slide_num:02d}_Yorum_{rep_author}_{rep_likes}likes.png",
+                    "bytes": rep_buf.getvalue(),
+                    "desc": f"Yorum (@{rep_author} - ❤️ {rep_likes:,})"
+                })
+            else:
+                print(f"Yorum {rep_id} render hatası: {rep_err}")
+
+        # 3. Aşama: Tweet içi fotoğraflar (Kaydırmalı Medya)
+        # Kural: 1 foto varsa zaten ana şablonda var; 1'den fazla foto varsa otomatik çıkarıp 1080x1350 bas!
+        if status_msg_id:
+            edit_message(chat_id, status_msg_id, "🖼️ <b>[3/4] Tweet içi fotoğraflar kontrol ediliyor...</b>")
+
+        tweet_media = fetch_tweet_media_info(tweet_id)
+        photo_urls = (tweet_media or {}).get("urls", [])
+        added_photos = 0
+
+        if len(photo_urls) > 1:
+            if status_msg_id:
+                edit_message(chat_id, status_msg_id, f"📥 <b>{len(photo_urls)} adet kaydırmalı fotoğraf 1080×1350 tuvale yerleştiriliyor...</b>")
+
+            for p_idx, p_url in enumerate(photo_urls, start=1):
+                try:
+                    img_resp = requests.get(p_url, timeout=30)
+                    if img_resp.status_code == 200:
+                        p_buf, _, _ = process_image(img_resp.content)
+                        slide_num = len(slides) + 1
+                        slides.append({
+                            "filename": f"{slide_num:02d}_Foto_{p_idx}.png",
+                            "bytes": p_buf.getvalue(),
+                            "desc": f"Kaydırmalı Fotoğraf {p_idx}"
+                        })
+                        added_photos += 1
+                except Exception as p_err:
+                    print(f"Fotoğraf {p_idx} işleme hatası: {p_err}")
+
+        total_slides = len(slides)
+
+        # 4. Aşama: Tek tıkla indirme ve albüm teslimatı
+        if status_msg_id:
+            edit_message(chat_id, status_msg_id, f"📦 <b>[4/4] Tüm şablonlar tek pakette birleştiriliyor ({total_slides} slayt)...</b>")
+
+        # Tek dosya ise (sadece ana tweet)
+        if total_slides == 1:
+            caption = (
+                "✨ <b>Instagram Post Şablonu Hazır!</b>\n"
+                f"👤 <b>Yazar:</b> {resolved_name} (@{resolved_handle})\n"
+                f"📐 <b>Ölçü:</b> 1080 × 1350 px (OLED Siyah Arka Plan)\n"
+                "📁 <i>Kayıpsız HD Orijinal PNG (Instagram'a Hazır)</i>"
+            )
+            requests.post(
+                f"{API_URL}/sendDocument",
+                data={
+                    "chat_id": chat_id,
+                    "caption": caption,
+                    "parse_mode": "HTML",
+                    "reply_to_message_id": msg_id
+                },
+                files={"document": (slides[0]["filename"], slides[0]["bytes"], "image/png")},
+                timeout=35
+            )
+        else:
+            # 1'den fazla slayt varsa:
+            # A) ZIP Paketi Oluştur (Tek tıkla tümünü indirmek için)
+            zip_buf = io.BytesIO()
+            with zipfile.ZipFile(zip_buf, "w", zipfile.ZIP_DEFLATED) as zf:
+                for s in slides:
+                    zf.writestr(s["filename"], s["bytes"])
+            zip_buf.seek(0)
+            zip_filename = f"Instagram_Paketi_{resolved_handle}_{tweet_id}.zip"
+
+            zip_caption = (
+                f"📦 <b>Instagram Post Paketi (Tek Tıkla İndir)</b>\n\n"
+                f"👤 <b>Yazar:</b> {resolved_name} (@{resolved_handle})\n"
+                f"📊 <b>İçerik:</b> {total_slides} Slayt\n"
+                f" • 📌 1 Ana Tweet Şablonu\n"
+                f" • 💬 {len(slides) - 1 - added_photos} Popüler Yorum (100+ Beğeni)\n"
+                + (f" • 🖼️ {added_photos} Kaydırmalı Fotoğraf\n" if added_photos > 0 else "")
+                + f"📐 <b>Ölçü:</b> 1080 × 1350 px (OLED Siyah)\n"
+                f"📁 <i>Tüm slaytlar sıralı ve kayıpsız HD PNG olarak pakettedir.</i>"
+            )
+
+            # ZIP dosyasını ilet
+            requests.post(
+                f"{API_URL}/sendDocument",
+                data={
+                    "chat_id": chat_id,
+                    "caption": zip_caption,
+                    "parse_mode": "HTML",
+                    "reply_to_message_id": msg_id
+                },
+                files={"document": (zip_filename, zip_buf.getvalue(), "application/zip")},
+                timeout=45
+            )
+
+            # B) Slaytları Telegram içinde tek bir albüm baloncuğunda (sendMediaGroup) gönder
+            files_data = [(s["filename"], s["bytes"]) for s in slides]
+            album_caption = f"📸 <b>Önizleme Albümü ({total_slides} Slayt):</b>\n@{resolved_handle}"
+            send_documents_batch(chat_id, files_data, caption=album_caption, reply_to_message_id=msg_id)
+
+        # Durum mesajını özetle tamamla
+        final_summary = (
+            f"🎉 <b>İşlem Başarıyla Tamamlandı!</b>\n\n"
+            f"👤 <b>Yazar:</b> {resolved_name} (@{resolved_handle})\n"
+            f"📊 <b>Toplam:</b> {total_slides} Slayt Hazırlandı\n"
+            f" • 1 Ana Tweet\n"
+            f" • {len(slides) - 1 - added_photos} Popüler Yorum (100+ beğeni)\n"
+            + (f" • {added_photos} Kaydırmalı Fotoğraf\n" if added_photos > 0 else "")
+            + "📲 <i>ZIP dosyasından tek indirmeyle tüm hazır şablonları alabilir veya albümden sırayla Instagram'a yükleyebilirsiniz.</i>"
+        )
+        if status_msg_id:
+            edit_message(chat_id, status_msg_id, final_summary)
+
+    except Exception as e:
+        print(f"/ig genel işlem hatası: {e}")
+        err_msg = f"❌ İşlem sırasında beklenmeyen bir hata oluştu: {str(e)}"
+        if status_msg_id:
+            edit_message(chat_id, status_msg_id, err_msg)
+        else:
+            send_message(chat_id, err_msg, reply_to_message_id=msg_id)
+
+def _old_handle_tweet_images(chat_id, msg_id, text):
+    """
+    /img komutu:
+    1. Önce /url2 akışını çalıştırır: Ana tweet şablonu + varsa 100+ beğenili popüler yorumları üretir ve gönderir.
+    2. Ardından tweetteki tüm fotoğrafları (kaydırmalı tweet içi resimler) çeker,
+       her birini 1080x1350 saf siyah tuval üzerine ortalayarak sığdırır ve
+       kayıpsız HD dosya şeklinde toplu mesaj olarak gönderir.
+    """
+    tweet_id = extract_tweet_id(text)
+    if not tweet_id:
+        send_message(
+            chat_id,
+            "⚠️ Lütfen geçerli bir Twitter / X linki belirtin.\nÖrnek:\n<code>/img https://x.com/kullanici/status/1234567890</code>",
+            reply_to_message_id=msg_id
+        )
+        return
+
+    # 1. ADIM: Önce /url2 çalışır (Ana tweet şablonu + varsa 100+ beğenili yorumlar)
+    handle_tweet_url(chat_id, msg_id, text)
+
+    # 2. ADIM: Tweet içerisindeki orijinal fotoğrafları işle ve toplu dosya olarak gönder
+    status_resp = send_message(
+        chat_id,
+        "⏳ <b>Tweet içindeki fotoğraflar taranıyor ve hazırlanıyor...</b>",
+        reply_to_message_id=msg_id
+    )
+    status_msg_id = status_resp.json().get("result", {}).get("message_id") if status_resp and status_resp.status_code == 200 else None
+
+    send_chat_action(chat_id, "upload_document")
+
+    try:
+        tweet_data = fetch_tweet_media_info(tweet_id)
+        if not tweet_data or not tweet_data.get("urls"):
+            info_text = "ℹ️ <i>Bu tweette ayrıca gömülü fotoğraf bulunmuyor. Ana tweet şablonu ve yorumlar iletildi.</i>"
+            if status_msg_id:
+                edit_message(chat_id, status_msg_id, info_text)
+            else:
+                send_message(chat_id, info_text, reply_to_message_id=msg_id)
+            return
+
+        urls = tweet_data["urls"]
+        author_str = f"@{tweet_data['author']}" if tweet_data.get("author") else "X / Twitter"
+        name_str = tweet_data.get("name", "Tweet")
+        total_photos = len(urls)
+
+        if status_msg_id:
+            edit_message(chat_id, status_msg_id, f"📥 <b>Tweetteki {total_photos} adet fotoğraf indiriliyor ve 1080×1350 tuvale yerleştiriliyor...</b>")
+
+        processed_files = []
+        last_orig_size = (0, 0)
+        last_new_size = (0, 0)
+
+        for idx, img_url in enumerate(urls, 1):
+            try:
+                # Orijinal görseli indir
+                img_resp = requests.get(img_url, timeout=30)
+                if img_resp.status_code != 200:
+                    print(f"Görsel {idx} indirilemedi: HTTP {img_resp.status_code}")
+                    continue
+
+                # Normal foto atılmış gibi 1080x1350 Saf Siyah Tuvale Otomatik Sığdır
+                output_buffer, orig_size, new_size = process_image(img_resp.content)
+                last_orig_size = orig_size
+                last_new_size = new_size
+
+                file_name = f"tweet_{tweet_id}_{idx}.png"
+                processed_files.append((file_name, output_buffer.getvalue(), orig_size, new_size))
+            except Exception as err:
+                print(f"Görsel {idx} işleme hatası: {err}")
+
+        if not processed_files:
+            err_text = "❌ Tweet fotoğrafları işlenirken bir sorun oluştu."
+            if status_msg_id:
+                edit_message(chat_id, status_msg_id, err_text)
+            else:
+                send_message(chat_id, err_text, reply_to_message_id=msg_id)
+            return
+
+        if status_msg_id:
+            edit_message(chat_id, status_msg_id, f"🚀 <b>{len(processed_files)} adet işlenmiş HD tweet fotoğrafı gönderiliyor...</b>")
+
+        # Caption (Açıklama metni)
+        if len(processed_files) > 1:
+            caption = (
+                f"✨ <b>Tweet İçi Fotoğraflar Hazır! ({len(processed_files)} Görsel)</b>\n"
+                f"👤 <b>Yazar:</b> {name_str} ({author_str})\n"
+                f"📐 <b>Ölçü:</b> 1080 × 1350 px (Saf Siyah Tuval - 4:5 Dikey)\n"
+                "📁 <i>Kayıpsız HD Orijinal PNG Dosyaları (Instagram'a Yüklemeye Hazır)</i>"
+            )
+        else:
+            caption = (
+                "✨ <b>Tweet İçi Fotoğraf Hazır!</b>\n"
+                f"👤 <b>Yazar:</b> {name_str} ({author_str})\n"
+                f"📐 <b>Ölçü:</b> 1080 × 1350 px (Saf Siyah Tuval)\n"
+                f"🔍 <b>Orijinal:</b> {last_orig_size[0]}×{last_orig_size[1]} ➔ 🎯 <b>Görsel:</b> {last_new_size[0]}×{last_new_size[1]} (Tam Ortalandı)\n"
+                "📁 <i>Kayıpsız HD Orijinal PNG (Instagram'a Yüklemeye Hazır)</i>"
+            )
+
+        # files_for_batch: [(file_name, file_bytes), ...]
+        files_for_batch = [(f[0], f[1]) for f in processed_files]
+        send_documents_batch(chat_id, files_for_batch, caption=caption, reply_to_message_id=msg_id)
+
+        # Durum mesajını başarıyla sonlandır veya güncelle
+        if status_msg_id:
+            success_summary = (
+                f"✅ <b>Tüm Paket Tamamlandı!</b>\n"
+                f"1️⃣ Ana tweet şablonu ve popüler yorumlar iletildi.\n"
+                f"2️⃣ Tweetteki {len(processed_files)} adet fotoğraf 1080×1350 saf siyah arka planla dosya formatında teslim edildi."
+            )
+            edit_message(chat_id, status_msg_id, success_summary)
+
+    except Exception as e:
+        print(f"/img işlem hatası: {e}")
+        err_msg = f"❌ Tweet fotoğrafları işlenirken bir hata oluştu: {str(e)}"
+        if status_msg_id:
+            edit_message(chat_id, status_msg_id, err_msg)
+        else:
+            send_message(chat_id, err_msg, reply_to_message_id=msg_id)
 
 def handle_update(update):
     message = update.get("message")
@@ -198,27 +930,36 @@ def handle_update(update):
             welcome = (
                 "👋 <b>Merhaba! Instagram 1080×1350 Post Botuna Hoş Geldin.</b>\n\n"
                 "📸 <b>Fotoğraf Gönder:</b>\n"
-                "Herhangi bir ekran görüntüsü veya fotoğraf at; kalitesini bozmadan 1080×1350 saf siyah tuvalin ortasına yerleştirip kayıpsız PNG olarak teslim edeyim.\n\n"
-                "🐦 <b>Twitter / X Linki Gönder:</b>\n"
-                "<code>/url2 https://x.com/kullanici/status/1234567890</code> şeklinde link at; OLED siyah temalı tweet ekran görüntüsü üretip 1080×1350 Instagram postuna dönüştüreyim!\n\n"
-                "Hemen dene! 🚀"
+                "Herhangi bir fotoğraf veya ekran görüntüsü at; kalitesini bozmadan 1080×1350 saf siyah tuval üzerine tam ortalayarak kayıpsız PNG olarak teslim edeyim.\n\n"
+                "💎 <b>Akıllı Instagram Paketi (/ig):</b>\n"
+                "<code>/ig https://x.com/kullanici/status/1234567890</code> şeklinde link at (veya doğrudan linki yapıştır);\n"
+                " • 📌 OLED dark ana tweet şablonunu hazırlar,\n"
+                " • 💬 Varsa 100+ beğeni almış en popüler yorumları (max 4, min 1) şablona dönüştürür (100+ altı yoksa almaz),\n"
+                " • 🖼️ Tweet içinde 1'den fazla kaydırmalı fotoğraf varsa hepsini 1080×1350 tuvale basar,\n"
+                " • 📦 Tek tıkla indirebileceğin <b>ZIP paketi</b> ve Telegram içi <b>Önizleme Albümü</b> olarak teslim eder!\n\n"
+                "Hemen linkini gönder! 🚀"
             )
             send_message(chat_id, welcome, reply_to_message_id=msg_id)
             return
 
-        # /url2 komutu kontrolü (Mevcut kod ve düzeni bozmadan çalışır)
-        if text.startswith("/url2"):
-            parts = text.split(maxsplit=1)
-            if len(parts) < 2 or not parts[1].strip():
-                send_message(
-                    chat_id,
-                    "⚠️ Lütfen bir Twitter / X linki belirtin.\nÖrnek:\n<code>/url2 https://x.com/kullanici/status/1234567890</code>",
-                    reply_to_message_id=msg_id
-                )
-                return
+        # /ig komutu kontrolü
+        if text.startswith("/ig"):
+            handle_ig_command(chat_id, msg_id, text)
+            return
 
-            tweet_url = parts[1].strip()
-            handle_tweet_url(chat_id, msg_id, tweet_url)
+        # /img komutu kontrolü (Geriye dönük uyumluluk)
+        if text.startswith("/img"):
+            handle_ig_command(chat_id, msg_id, text)
+            return
+
+        # /url2 veya /url komutu kontrolü (Geriye dönük uyumluluk)
+        if text.startswith("/url2") or text.startswith("/url"):
+            handle_ig_command(chat_id, msg_id, text)
+            return
+
+        # Doğrudan atılan Twitter/X linklerini de otomatik algıla
+        if re.search(r"https?://(?:twitter\.com|x\.com|fixupx\.com|vxtwitter\.com|fxtwitter\.com)/[a-zA-Z0-9_]+/status/\d+", text):
+            handle_ig_command(chat_id, msg_id, text)
             return
 
     file_id = None
