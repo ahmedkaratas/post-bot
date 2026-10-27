@@ -22,7 +22,7 @@ COPY shots/tweet-shot/package*.json ./shots/tweet-shot/
 RUN cd shots/tweet-shot && npm install --omit=dev
 
 COPY shots/ ./shots/
-COPY bot.py .
+COPY bot.py radar_store.py twitter_radar.py ./
 
 ENV PYTHONUNBUFFERED=1
 ENV PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium
