@@ -128,7 +128,10 @@ def find_top_new_viral_tweet(min_faves=5000):
 
     raw_tweets = res.get("tweets", [])
     if not raw_tweets:
-        return None, 0, "Arama kriterlerine (5000+ beğeni) uyan yeni tweet bulunamadı."
+        dbg_url = res.get("currentUrl", "")
+        dbg_title = res.get("title", "")
+        detail = f" (URL: {dbg_url})" if dbg_url else ""
+        return None, 0, f"Arama kriterlerine ({min_faves:,}+ beğeni) uyan yeni tweet bulunamadı.{detail}"
 
     # Daha önce iletilmemiş olanları filtrele
     unseen = [t for t in raw_tweets if not radar_store.is_sent(t.get("id"))]

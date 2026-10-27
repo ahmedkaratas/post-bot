@@ -31,7 +31,10 @@ async function searchTwitter(query, authToken, ct0, maxWait = 35000) {
       '--disable-setuid-sandbox',
       '--disable-dev-shm-usage',
       '--disable-gpu',
+      '--disable-software-rasterizer',
       '--no-first-run',
+      '--no-zygote',
+      '--single-process',
       '--disable-extensions',
       '--disable-blink-features=AutomationControlled',
       '--window-size=1280,900',
@@ -70,17 +73,6 @@ async function searchTwitter(query, authToken, ct0, maxWait = 35000) {
       'Accept-Language': 'tr-TR,tr;q=0.9,en-US;q=0.8,en;q=0.7',
     }).catch(() => {});
 
-    // Ağ trafiğini hızlandırmak için sadece ağır medyayı engelle (CSS ve JS'ye izin ver)
-    await page.setRequestInterception(true);
-    page.on('request', (req) => {
-      const type = req.resourceType();
-      if (['image', 'media', 'font'].includes(type)) {
-        req.abort();
-      } else {
-        req.continue();
-      }
-    });
-
     // GraphQL yanıtlarını derinlemesine (recursive) tara ve yakala
     page.on('response', async (response) => {
       const url = response.url();
@@ -96,17 +88,17 @@ async function searchTwitter(query, authToken, ct0, maxWait = 35000) {
     const searchUrl = `https://x.com/search?q=${encodeURIComponent(query)}&f=top`;
     await page.goto(searchUrl, { waitUntil: 'domcontentloaded', timeout: maxWait }).catch(() => {});
 
-    // Sayfadaki tweet makalelerinin (article) belirmesini bekle
-    await page.waitForSelector('article[data-testid="tweet"]', { timeout: 12000 }).catch(() => {});
+    // Sayfadaki tweet makalelerinin belirmesini bekle (Render yavaş CPU için 25s)
+    await page.waitForSelector('article[data-testid="tweet"]', { timeout: 25000 }).catch(() => {});
 
     // Kısa bir bekleme (GraphQL veya DOM tam yerleşsin)
     const startWait = Date.now();
-    while (Date.now() - startWait < 5000) {
+    while (Date.now() - startWait < 12000) {
       if (tweetsFound.length >= 1) break;
-      await new Promise((r) => setTimeout(r, 500));
+      await new Promise((r) => setTimeout(r, 600));
     }
 
-    // DOM üzerinden doğrudan tweetleri oku (En garantili yöntem)
+    // DOM üzerinden doğrudan tweetleri oku (Yedek yöntem)
     const domTweets = await page.$$eval('article[data-testid="tweet"]', (articles) => {
       return articles.map((art) => {
         const links = Array.from(art.querySelectorAll('a[href*="/status/"]'));
@@ -154,10 +146,15 @@ async function searchTwitter(query, authToken, ct0, maxWait = 35000) {
     // Beğeniye göre sırala
     tweetsFound.sort((a, b) => (b.likes || 0) - (a.likes || 0));
 
+    const finalUrl = page.url();
+    const pageTitle = await page.title().catch(() => '');
+
     return {
       success: true,
       query,
       count: tweetsFound.length,
+      currentUrl: finalUrl,
+      title: pageTitle,
       tweets: tweetsFound,
     };
   } catch (err) {
