@@ -94,7 +94,7 @@ def search_viral_tweets(min_faves=5000, days_back=2):
         }
 
     since_date = get_dynamic_since_date(days_back=days_back)
-    query = f"min_faves:{min_faves} lang:tr since:{since_date} -filter:replies -filter:retweets"
+    query = f"min_faves:{min_faves} lang:tr since:{since_date}"
 
     try:
         res = subprocess.run(
