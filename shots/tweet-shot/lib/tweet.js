@@ -42,7 +42,7 @@ function parseTweetInput(input) {
   // handles URLs such as https://x.com/user/status/123?t=...&s=20
   const hostPart = HOSTS.map((h) => h.replace(/\./g, '\\.')).join('|');
   const re = new RegExp(
-    `(?:${hostPart})\\/(?:([A-Za-z0-9_]{1,15})\\/)?(?:status|statuses|i\\/status)\\/(\\d{1,25})`,
+    `(?:${hostPart})\\/+(?:([A-Za-z0-9_]{1,15})\\/+)?(?:status|statuses|i\\/status)\\/+(\\d{1,25})`,
     'i'
   );
   const m = raw.match(re);

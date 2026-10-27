@@ -184,9 +184,14 @@ function extractTweetsRecursively(obj, tweetsList, seenIds) {
     if (legacy && legacy.full_text) {
       const tweetId = tweetObj.rest_id || legacy.id_str;
       if (tweetId && !seenIds.has(tweetId)) {
-        const userResult = tweetObj.core?.user_results?.result?.legacy || {};
-        const authorHandle = userResult.screen_name || '';
-        const authorName = userResult.name || authorHandle;
+        const userRes = tweetObj.core?.user_results?.result || {};
+        const userCore = userRes.core || userRes.legacy || userRes;
+        const authorHandle = userCore.screen_name || userRes.screen_name || '';
+        const authorName = userCore.name || userRes.name || authorHandle;
+        const cleanUrl = authorHandle
+          ? `https://x.com/${authorHandle}/status/${tweetId}`
+          : `https://x.com/i/status/${tweetId}`;
+
         seenIds.add(tweetId);
         tweetsList.push({
           id: tweetId,
@@ -195,7 +200,7 @@ function extractTweetsRecursively(obj, tweetsList, seenIds) {
           text: legacy.full_text || '',
           likes: legacy.favorite_count || 0,
           retweets: legacy.retweet_count || 0,
-          url: `https://x.com/${authorHandle}/status/${tweetId}`,
+          url: cleanUrl,
           createdAt: legacy.created_at || '',
         });
       }
