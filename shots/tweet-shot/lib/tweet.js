@@ -54,7 +54,7 @@ function parseTweetInput(input) {
   return null;
 }
 
-async function getJson(url, timeout = 9000) {
+async function getJson(url, timeout = 4000) {
   const res = await fetch(url, {
     headers: { 'user-agent': UA, accept: 'application/json' },
     signal: AbortSignal.timeout(timeout),

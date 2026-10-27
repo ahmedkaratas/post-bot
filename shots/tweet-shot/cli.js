@@ -42,7 +42,7 @@ async function main() {
   const publicPath = path.resolve(__dirname, 'public');
   const html = renderCard(tweet, opts).replace('<head>', `<head><base href="file://${publicPath}/">`);
 
-  // 3. Headless Chrome ile render
+  // 3. Headless Chrome ile render (Linux container & Docker için optimize argümanlar)
   const browser = await puppeteer.launch({
     executablePath: findChrome(),
     headless: true,
@@ -50,6 +50,12 @@ async function main() {
       '--no-sandbox',
       '--disable-setuid-sandbox',
       '--disable-dev-shm-usage',
+      '--disable-gpu',
+      '--disable-software-rasterizer',
+      '--no-first-run',
+      '--no-zygote',
+      '--single-process',
+      '--disable-extensions',
       '--allow-file-access-from-files',
       '--font-render-hinting=none',
       '--force-color-profile=srgb',
@@ -58,9 +64,10 @@ async function main() {
 
   try {
     const page = await browser.newPage();
+    page.setDefaultTimeout(15000);
     await page.setViewport({ width: 560, height: 1200, deviceScaleFactor: opts.scale });
-    await page.setContent(html, { waitUntil: 'networkidle0' });
-    await page.waitForFunction("document.documentElement.dataset.ready === '1'", { timeout: 15000 });
+    await page.setContent(html, { waitUntil: 'domcontentloaded', timeout: 15000 });
+    await page.waitForFunction("document.documentElement.dataset.ready === '1'", { timeout: 10000 }).catch(() => {});
 
     const el = await page.$('#shot');
     if (!el) throw new Error('Shot elementi bulunamadı');

@@ -211,7 +211,7 @@ def render_tweet_to_canvas(tweet_input, cli_path):
             ["node", cli_path, str(tweet_input), temp_out],
             capture_output=True,
             text=True,
-            timeout=45
+            timeout=75
         )
 
         if res.returncode != 0:
@@ -242,7 +242,7 @@ def render_tweet_to_canvas(tweet_input, cli_path):
         return out_buffer, tweet_info, None
 
     except subprocess.TimeoutExpired:
-        return None, None, "Zaman aşımı (45s)"
+        return None, None, "Zaman aşımı (75s)"
     except Exception as e:
         return None, None, str(e)
     finally:
