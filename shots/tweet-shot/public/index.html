@@ -1,0 +1,142 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>TweetShot — tweet screenshot generator</title>
+<meta name="description" content="Turn any public X post into a clean, share-ready PNG. Time, date, metrics, views and media toggles — off by default.">
+<link rel="preload" as="font" type="font/woff2" href="/fonts/chirp-regular-web.woff2" crossorigin>
+<link rel="preload" as="font" type="font/woff2" href="/fonts/chirp-bold-web.woff2" crossorigin>
+<link rel="stylesheet" href="/styles.css">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Crect width='24' height='24' rx='6' fill='%230f1419'/%3E%3Cpath fill='%23fff' d='M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-5.214-6.817L4.99 21.75H1.68l7.73-8.835L1.254 2.25H8.08l4.713 6.231zm-1.161 17.52h1.833L7.084 4.126H5.117z'/%3E%3C/svg%3E">
+</head>
+<body>
+
+<header class="topbar">
+  <a class="brand" href="/">
+    <span class="brand-mark">
+      <svg viewBox="0 0 24 24" width="17" height="17" fill="currentColor"><path d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-5.214-6.817L4.99 21.75H1.68l7.73-8.835L1.254 2.25H8.08l4.713 6.231zm-1.161 17.52h1.833L7.084 4.126H5.117z"/></svg>
+    </span>
+    <span class="brand-name">TweetShot</span>
+  </a>
+  <div class="topbar-right">
+    <span class="pill">local build</span>
+    <a class="ghost-link" href="/api/v1/screenshot/1617979122625712128?theme=light" target="_blank" rel="noreferrer">API</a>
+  </div>
+</header>
+
+<main>
+  <section class="intro">
+    <h1>Paste a link.<br>Get a clean screenshot.</h1>
+    <p>Any public X / Twitter post becomes a pixel-perfect PNG. No login, no cropping, no browser UI.</p>
+  </section>
+
+  <div class="workspace">
+    <aside class="panel">
+      <form id="form" autocomplete="off">
+        <label class="field-label" for="url">Tweet URL</label>
+        <div class="input-row">
+          <input id="url" name="url" type="text" inputmode="url" spellcheck="false"
+                 placeholder="https://x.com/user/status/1234567890" aria-describedby="hint">
+          <button class="btn primary" type="submit" id="generate">Generate</button>
+        </div>
+        <p id="hint" class="hint">Paste a status link or a numeric post ID. Public posts only.</p>
+      </form>
+
+      <div class="rule"></div>
+
+      <div class="group-head">
+        <h2>Display Settings</h2>
+        <button type="button" id="reset" class="link-btn">Reset</button>
+      </div>
+
+      <ul class="toggles" id="toggles">
+        <li>
+          <div class="toggle-copy"><span>Time Display</span><small>Show the post time, e.g. 3:23 AM</small></div>
+          <button type="button" class="switch" role="switch" aria-checked="false" data-key="time" aria-label="Time Display"></button>
+        </li>
+        <li>
+          <div class="toggle-copy"><span>Date</span><small>Show the post date, e.g. Oct 26, 2026</small></div>
+          <button type="button" class="switch" role="switch" aria-checked="false" data-key="date" aria-label="Date"></button>
+        </li>
+        <li>
+          <div class="toggle-copy"><span>Show Metrics</span><small>Replies, reposts, likes and bookmarks</small></div>
+          <button type="button" class="switch" role="switch" aria-checked="false" data-key="metrics" aria-label="Show Metrics"></button>
+        </li>
+        <li>
+          <div class="toggle-copy"><span>Show Views</span><small>Append the view count to the timestamp</small></div>
+          <button type="button" class="switch" role="switch" aria-checked="false" data-key="views" aria-label="Show Views"></button>
+        </li>
+        <li>
+          <div class="toggle-copy"><span>Show Media</span><small>Render attached photos and video thumbnails</small></div>
+          <button type="button" class="switch" role="switch" aria-checked="false" data-key="media" aria-label="Show Media"></button>
+        </li>
+      </ul>
+
+      <div class="rule"></div>
+
+      <div class="group-head"><h2>Appearance</h2></div>
+
+      <div class="control">
+        <span class="control-label">Card theme</span>
+        <div class="segmented" id="theme" role="group" aria-label="Card theme">
+          <button type="button" data-value="light" class="active">Light</button>
+          <button type="button" data-value="dark">Dark</button>
+        </div>
+      </div>
+
+      <div class="control">
+        <span class="control-label">Resolution</span>
+        <div class="segmented" id="scale" role="group" aria-label="Resolution">
+          <button type="button" data-value="1">1×</button>
+          <button type="button" data-value="2" class="active">2×</button>
+          <button type="button" data-value="3">4K</button>
+        </div>
+      </div>
+
+      <div class="control">
+        <span class="control-label">Footer</span>
+        <div class="segmented" id="footer" role="group" aria-label="Footer">
+          <button type="button" data-value="1" class="active">On</button>
+          <button type="button" data-value="0">Off</button>
+        </div>
+      </div>
+    </aside>
+
+    <section class="stage" aria-live="polite">
+      <div class="stage-head">
+        <div class="stage-title">
+          <span id="status" class="status">Preview</span>
+          <span id="author" class="author"></span>
+        </div>
+        <div class="stage-actions">
+          <button type="button" id="copy" class="btn ghost" disabled>Copy image</button>
+          <a id="download" class="btn primary disabled" download aria-disabled="true">Download PNG</a>
+        </div>
+      </div>
+
+      <div class="frame" id="frame">
+        <div class="placeholder" id="placeholder">
+          <div class="placeholder-art" aria-hidden="true">
+            <svg viewBox="0 0 24 24" width="26" height="26" fill="currentColor"><path d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-5.214-6.817L4.99 21.75H1.68l7.73-8.835L1.254 2.25H8.08l4.713 6.231zm-1.161 17.52h1.833L7.084 4.126H5.117z"/></svg>
+          </div>
+          <p>Nothing rendered yet.</p>
+          <button type="button" class="btn ghost" id="example">Try an example</button>
+        </div>
+        <img id="preview" alt="Rendered tweet screenshot" hidden>
+        <div class="spinner" id="spinner" hidden></div>
+      </div>
+
+      <div class="stage-foot">
+        <span id="dimensions" class="dimensions"></span>
+        <span id="source" class="source"></span>
+      </div>
+    </section>
+  </div>
+</main>
+
+<div id="toast" class="toast" role="status" hidden></div>
+
+<script src="/app.js"></script>
+</body>
+</html>

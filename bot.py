@@ -9,6 +9,9 @@ import io
 import time
 import signal
 import sys
+import json
+import tempfile
+import subprocess
 import requests
 from PIL import Image, ImageOps
 
@@ -96,6 +99,90 @@ def process_image(image_bytes):
         
         return out_buf, (orig_w, orig_h), (new_w, new_h)
 
+def handle_tweet_url(chat_id, msg_id, tweet_url):
+    """
+    /url komutuyla gelen Twitter/X linkini tweet-shot üzerinden
+    OLED Dark temalı ekran görüntüsüne çevirir ve 1080x1350 siyah tuvale yerleştirir.
+    """
+    send_chat_action(chat_id, "upload_document")
+
+    temp_dir = tempfile.gettempdir()
+    temp_out = os.path.join(temp_dir, f"tweet_{int(time.time() * 1000)}.png")
+    cli_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "shots", "tweet-shot", "cli.js")
+
+    try:
+        # tweet-shot CLI ile tweet ekran görüntüsü oluştur
+        res = subprocess.run(
+            ["node", cli_path, tweet_url, temp_out],
+            capture_output=True,
+            text=True,
+            timeout=45
+        )
+
+        if res.returncode != 0:
+            err_msg = res.stderr.strip() or res.stdout.strip() or "Bilinmeyen hata"
+            try:
+                err_json = json.loads(err_msg)
+                err_msg = err_json.get("error", err_msg)
+            except Exception:
+                pass
+            send_message(chat_id, f"❌ Tweet dönüştürülemedi: {err_msg}", reply_to_message_id=msg_id)
+            return
+
+        tweet_info = {}
+        try:
+            for line in res.stdout.strip().split("\n"):
+                if line.strip().startswith("{"):
+                    tweet_info = json.loads(line.strip())
+                    break
+        except Exception:
+            pass
+
+        if not os.path.exists(temp_out):
+            send_message(chat_id, "❌ Tweet ekran görüntüsü oluşturulamadı.", reply_to_message_id=msg_id)
+            return
+
+        with open(temp_out, "rb") as f:
+            tweet_png_data = f.read()
+
+        # Var olan 1080x1350 siyah tuval algoritmasını birebir uygula
+        output_buffer, orig_size, new_size = process_image(tweet_png_data)
+
+        author_str = f"@{tweet_info.get('author')}" if tweet_info.get('author') else "X / Twitter"
+        name_str = tweet_info.get("name", "Tweet")
+
+        caption = (
+            "✨ <b>Instagram Tweet Gönderin Hazır!</b>\n"
+            f"👤 <b>Yazar:</b> {name_str} ({author_str})\n"
+            f"📐 <b>Ölçü:</b> 1080 × 1350 px (OLED Siyah Arka Plan)\n"
+            "📁 <i>Kayıpsız HD Orijinal PNG (Instagram'a Yüklemeye Hazır)</i>"
+        )
+
+        output_buffer.seek(0)
+        requests.post(
+            f"{API_URL}/sendDocument",
+            data={
+                "chat_id": chat_id,
+                "caption": caption,
+                "parse_mode": "HTML",
+                "reply_to_message_id": msg_id
+            },
+            files={"document": (f"tweet_{tweet_info.get('id', 'post')}.png", output_buffer.getvalue(), "image/png")},
+            timeout=30
+        )
+
+    except subprocess.TimeoutExpired:
+        send_message(chat_id, "⏱️ Tweet yüklenirken zaman aşımı oluştu. Lütfen linki kontrol edip tekrar deneyin.", reply_to_message_id=msg_id)
+    except Exception as e:
+        print(f"Tweet işleme hatası: {e}")
+        send_message(chat_id, f"❌ Tweet işlenirken hata oluştu: {str(e)}", reply_to_message_id=msg_id)
+    finally:
+        if os.path.exists(temp_out):
+            try:
+                os.remove(temp_out)
+            except Exception:
+                pass
+
 def handle_update(update):
     message = update.get("message")
     if not message:
@@ -110,14 +197,28 @@ def handle_update(update):
         if text.startswith("/start") or text.startswith("/help"):
             welcome = (
                 "👋 <b>Merhaba! Instagram 1080×1350 Post Botuna Hoş Geldin.</b>\n\n"
-                "📸 Bana herhangi bir <b>ekran görüntüsü</b> veya <b>fotoğraf</b> gönder.\n\n"
-                "⚡ <b>Ne Yaparım?</b>\n"
-                "• Çözünürlüğü ve en-boy oranını bozmadan otomatik sığdırırım.\n"
-                "• <b>1080 × 1350 px</b> saf siyah arka planın tam ortasına yerleştiririm.\n"
-                "• Hem <b>önizleme fotoğrafı</b> hem de <b>orijinal kayıpsız dosya (PNG)</b> olarak anında teslim ederim!\n\n"
-                "Hemen bir fotoğraf at ve dene! 🚀"
+                "📸 <b>Fotoğraf Gönder:</b>\n"
+                "Herhangi bir ekran görüntüsü veya fotoğraf at; kalitesini bozmadan 1080×1350 saf siyah tuvalin ortasına yerleştirip kayıpsız PNG olarak teslim edeyim.\n\n"
+                "🐦 <b>Twitter / X Linki Gönder:</b>\n"
+                "<code>/url https://x.com/kullanici/status/1234567890</code> şeklinde link at; OLED siyah temalı tweet ekran görüntüsü üretip 1080×1350 Instagram postuna dönüştüreyim!\n\n"
+                "Hemen dene! 🚀"
             )
             send_message(chat_id, welcome, reply_to_message_id=msg_id)
+            return
+
+        # /url komutu kontrolü (Mevcut kod ve düzeni bozmadan çalışır)
+        if text.startswith("/url"):
+            parts = text.split(maxsplit=1)
+            if len(parts) < 2 or not parts[1].strip():
+                send_message(
+                    chat_id,
+                    "⚠️ Lütfen bir Twitter / X linki belirtin.\nÖrnek:\n<code>/url https://x.com/kullanici/status/1234567890</code>",
+                    reply_to_message_id=msg_id
+                )
+                return
+
+            tweet_url = parts[1].strip()
+            handle_tweet_url(chat_id, msg_id, tweet_url)
             return
 
     file_id = None

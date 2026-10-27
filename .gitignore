@@ -3,3 +3,7 @@ __pycache__/
 *.pyc
 .DS_Store
 .env
+node_modules/
+shots/**/node_modules/
+shots/**/.cache/
+*.log
