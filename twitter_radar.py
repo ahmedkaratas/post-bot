@@ -8,6 +8,7 @@ en popüler ve henüz gönderilmemiş viral Türkçe tweetleri tespit eder.
 import os
 import json
 import time
+import html
 import threading
 import subprocess
 from datetime import datetime, timedelta, timezone
@@ -142,8 +143,7 @@ def find_top_new_viral_tweet(min_faves=5000):
     raw_tweets = res.get("tweets", [])
     if not raw_tweets:
         dbg_url = res.get("currentUrl", "")
-        dbg_title = res.get("title", "")
-        detail = f" (URL: {dbg_url})" if dbg_url else ""
+        detail = f" (URL: {html.escape(dbg_url)})" if dbg_url else ""
         return None, 0, f"Arama kriterlerine ({min_faves:,}+ beğeni) uyan yeni tweet bulunamadı.{detail}"
 
     # Daha önce iletilmemiş olanları filtrele

@@ -93,7 +93,14 @@ def send_message(chat_id, text, reply_to_message_id=None, message_thread_id=None
             payload["reply_to_message_id"] = reply_to_message_id
         if message_thread_id:
             payload["message_thread_id"] = message_thread_id
-        return requests.post(f"{API_URL}/sendMessage", json=payload, timeout=15)
+        resp = requests.post(f"{API_URL}/sendMessage", json=payload, timeout=15)
+        if resp.status_code != 200:
+            print(f"Telegram sendMessage hatası ({resp.status_code}): {resp.text}")
+            # Eğer HTML parse hatası varsa, parse_mode olmadan düz metin olarak tekrar gönder
+            if "can't parse entities" in resp.text:
+                payload.pop("parse_mode", None)
+                resp = requests.post(f"{API_URL}/sendMessage", json=payload, timeout=15)
+        return resp
     except Exception as e:
         print(f"Mesaj gönderme hatası: {e}")
         return None
@@ -106,7 +113,11 @@ def edit_message(chat_id, message_id, text):
             "text": text,
             "parse_mode": "HTML"
         }
-        return requests.post(f"{API_URL}/editMessageText", json=payload, timeout=10)
+        resp = requests.post(f"{API_URL}/editMessageText", json=payload, timeout=10)
+        if resp.status_code != 200 and "can't parse entities" in resp.text:
+            payload.pop("parse_mode", None)
+            resp = requests.post(f"{API_URL}/editMessageText", json=payload, timeout=10)
+        return resp
     except Exception as e:
         print(f"Mesaj güncelleme hatası: {e}")
         return None
@@ -1002,42 +1013,51 @@ def trigger_radar_delivery(chat_id, thread_id=None, reply_to_id=None):
     """
     Hedef odaya yeni bir viral tweet bulup tam Instagram paketi (ZIP + Albüm) olarak teslim eder.
     """
-    cfg = radar_store.get_config()
-    min_faves = cfg.get("min_faves", 5000)
+    try:
+        cfg = radar_store.get_config()
+        min_faves = cfg.get("min_faves", 5000)
 
-    top_tweet, total_found, err = find_top_new_viral_tweet(min_faves=min_faves)
-    if err or not top_tweet:
-        err_msg = f"⚠️ <b>Radar Bildirimi:</b> {err or 'Yeni viral tweet bulunamadı.'}"
-        send_message(chat_id, err_msg, reply_to_message_id=reply_to_id, message_thread_id=thread_id)
-        return
+        top_tweet, total_found, err = find_top_new_viral_tweet(min_faves=min_faves)
+        if err or not top_tweet:
+            err_msg = f"⚠️ <b>Radar Bildirimi:</b> {err or 'Yeni viral tweet bulunamadı.'}"
+            send_message(chat_id, err_msg, reply_to_message_id=reply_to_id, message_thread_id=thread_id)
+            return
 
-    tweet_id = top_tweet["id"]
-    tweet_url = top_tweet["url"]
-    author = top_tweet.get("author", "X")
-    name = top_tweet.get("name", author)
-    likes = top_tweet.get("likes", 0)
+        tweet_id = top_tweet["id"]
+        tweet_url = top_tweet["url"]
+        author = top_tweet.get("author", "X")
+        name = top_tweet.get("name", author)
+        likes = top_tweet.get("likes", 0)
 
-    # Bildirim başlığı
-    intro_text = (
-        f"🔥 <b>Yeni Viral Tweet Keşfedildi!</b>\n\n"
-        f"👤 <b>Yazar:</b> {name} (@{author})\n"
-        f"❤️ <b>Beğeni:</b> {likes:,}\n"
-        f"🔗 <b>X Link:</b> {tweet_url}\n\n"
-        "🎨 <i>1080×1350 OLED Instagram Post Paketi hazırlanıyor...</i>"
-    )
-    send_message(chat_id, intro_text, reply_to_message_id=reply_to_id, message_thread_id=thread_id)
+        # Bildirim başlığı
+        intro_text = (
+            f"🔥 <b>Yeni Viral Tweet Keşfedildi!</b>\n\n"
+            f"👤 <b>Yazar:</b> {name} (@{author})\n"
+            f"❤️ <b>Beğeni:</b> {likes:,}\n"
+            f"🔗 <b>X Link:</b> {tweet_url}\n\n"
+            "🎨 <i>1080×1350 OLED Instagram Post Paketi hazırlanıyor...</i>"
+        )
+        send_message(chat_id, intro_text, reply_to_message_id=reply_to_id, message_thread_id=thread_id)
 
-    # Gönderildi olarak kaydet (tekilleştirme)
-    radar_store.mark_sent(tweet_id, author=author, likes=likes)
+        # Gönderildi olarak kaydet (tekilleştirme)
+        radar_store.mark_sent(tweet_id, author=author, likes=likes)
 
-    # Mevcut Instagram motorunu tam otomatik çalıştır (Ana tweet + yorumlar + fotoğraflar + ZIP)
-    handle_ig_command(
-        chat_id=chat_id,
-        msg_id=None,
-        raw_input=tweet_url,
-        include_comments=True,
-        message_thread_id=thread_id
-    )
+        # Mevcut Instagram motorunu tam otomatik çalıştır (Ana tweet + yorumlar + fotoğraflar + ZIP)
+        handle_ig_command(
+            chat_id=chat_id,
+            msg_id=None,
+            raw_input=tweet_url,
+            include_comments=True,
+            message_thread_id=thread_id
+        )
+    except Exception as e:
+        print(f"Radar teslimat hatası: {e}")
+        send_message(
+            chat_id,
+            f"❌ <b>Radar Teslimat Hatası:</b> {str(e)}",
+            reply_to_message_id=reply_to_id,
+            message_thread_id=thread_id
+        )
 
 def run_radar_scheduler():
     """
