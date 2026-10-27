@@ -233,7 +233,7 @@ function renderCard(tweet, opts) {
       <div class="brand"><svg viewBox="0 0 24 24" width="30" height="30" fill="currentColor"><path d="${X_LOGO}"/></svg></div>
     </div>
 
-    ${tweet.text && tweet.text.trim() ? `<div class="text">${renderText(tweet.text)}</div>` : ''}
+    ${tweet.text && tweet.text.trim() ? `<div class="text${tweet.text.length > 200 ? ' long' : ''}">${renderText(tweet.text)}</div>` : ''}
     ${quoteBlock(tweet.quote, opts)}
     ${opts.media ? mediaBlock(tweet.media || []) : ''}
     ${pollBlock(tweet.poll)}
@@ -301,17 +301,18 @@ body{font-family:'Chirp','TwitterChirp','Helvetica Neue',Helvetica,Arial,sans-se
 .card{background:var(--card);padding:${oled ? '12px 10px' : '32px'};box-shadow:var(--shadow);border-radius:${oled ? '0px' : '2px'}}
 
 .head{display:flex;align-items:center}
-.avatar{width:40px;height:40px;border-radius:50%;object-fit:cover;margin-right:8px;background:var(--line);flex:none}
+.avatar{width:48px;height:48px;border-radius:50%;object-fit:cover;margin-right:10px;background:var(--line);flex:none}
 .who{flex:1;min-width:0}
-.name-row{display:flex;align-items:flex-end;height:22px;gap:4px;overflow:hidden}
-.name{font-size:15px;line-height:20px;font-weight:700;letter-spacing:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.badge{width:16px;height:16px;flex:none;margin-top:0}
-.badge.small{width:15px;height:15px}
-.handle{font-size:15px;line-height:20px;margin-top:2px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.brand{margin-left:12px;margin-top:4px;color:${dark ? '#e7e9ea' : '#0f1419'};flex:none;display:flex}
+.name-row{display:flex;align-items:flex-end;height:24px;gap:5px;overflow:hidden}
+.name{font-size:18px;line-height:24px;font-weight:700;letter-spacing:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.badge{width:18px;height:18px;flex:none;margin-top:0}
+.badge.small{width:16px;height:16px}
+.handle{font-size:16px;line-height:22px;margin-top:1px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.brand{margin-left:12px;margin-top:2px;color:${dark ? '#e7e9ea' : '#0f1419'};flex:none;display:flex}
 .sr{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0)}
 
-.text{margin-top:14px;font-size:16px;line-height:24px;overflow-wrap:anywhere}
+.text{margin-top:14px;font-size:24px;line-height:34px;letter-spacing:-0.3px;overflow-wrap:anywhere}
+.text.long{font-size:19px;line-height:27px}
 .text p{margin:0}
 .text p+p{margin-top:16px}
 .link{color:#1d9bf0}
@@ -321,7 +322,7 @@ body{font-family:'Chirp','TwitterChirp','Helvetica Neue',Helvetica,Arial,sans-se
 .mi img{display:block;width:100%;height:100%;object-fit:cover}
 .media.n1{display:block}
 .media.n1 .mi{min-height:auto}
-.media.n1 .mi img{width:100%;height:auto;max-height:none;object-fit:contain}
+.media.n1 .mi img{width:100%;height:auto;max-height:480px;object-fit:cover;object-position:top}
 .media.n2{grid-template-columns:1fr 1fr;height:220px}
 .media.n3{grid-template-columns:1fr 1fr;grid-template-rows:1fr 1fr;height:300px}
 .media.n3 .m0{grid-row:span 2}

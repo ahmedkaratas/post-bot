@@ -684,7 +684,11 @@ def handle_ig_command(chat_id, msg_id, raw_input):
                 print(f"Yorum {rep_id} render hatası: {rep_err}")
 
         # 3. Aşama: Tweet içi fotoğraflar (Kaydırmalı Medya)
-        # Kural: 1 foto varsa zaten ana şablonda var; 1'den fazla foto varsa otomatik çıkarıp 1080x1350 bas!
+        # Kural:
+        # - 1 foto varsa ve yatay/kare ise ana şablona tam sığar (ekstra slayt gerekmez).
+        # - 1 foto varsa ama dikey/uzun ise (aspect < 0.95), ana şablonda üst kısmı önizleme kalır; 
+        #   kullanıcının tamamını rahat okuyabilmesi için otomatik olarak tam boy 2. slayt olarak eklenir!
+        # - 1'den fazla foto varsa: her biri otomatik olarak 1080x1350 tuvale basılıp slayt yapılır.
         if status_msg_id:
             edit_message(chat_id, status_msg_id, "🖼️ <b>[3/4] Tweet içi fotoğraflar kontrol ediliyor...</b>")
 
@@ -692,7 +696,30 @@ def handle_ig_command(chat_id, msg_id, raw_input):
         photo_urls = (tweet_media or {}).get("urls", [])
         added_photos = 0
 
-        if len(photo_urls) > 1:
+        if len(photo_urls) == 1:
+            try:
+                single_url = photo_urls[0]
+                img_resp = requests.get(single_url, timeout=30)
+                if img_resp.status_code == 200:
+                    with Image.open(io.BytesIO(img_resp.content)) as p_img:
+                        pw, ph = p_img.size
+                        p_aspect = pw / ph if ph > 0 else 1.0
+
+                    if p_aspect < 0.95:
+                        if status_msg_id:
+                            edit_message(chat_id, status_msg_id, "📥 <b>Dikey uzun görsel tam boy slayt olarak hazırlanıyor...</b>")
+                        p_buf, _, _ = process_image(img_resp.content)
+                        slide_num = len(slides) + 1
+                        slides.append({
+                            "filename": f"{slide_num:02d}_Foto_1_TamBoy.png",
+                            "bytes": p_buf.getvalue(),
+                            "desc": "Tam Boy Dikey Görsel"
+                        })
+                        added_photos += 1
+            except Exception as e:
+                print(f"Tekil görsel dikey kontrol hatası: {e}")
+
+        elif len(photo_urls) > 1:
             if status_msg_id:
                 edit_message(chat_id, status_msg_id, f"📥 <b>{len(photo_urls)} adet kaydırmalı fotoğraf 1080×1350 tuvale yerleştiriliyor...</b>")
 
