@@ -18,6 +18,8 @@ import subprocess
 import requests
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from PIL import Image, ImageOps
+from radar_store import radar_store
+from twitter_radar import find_top_new_viral_tweet
 
 BOT_TOKEN = os.getenv("BOT_TOKEN", "8534996297:AAE9K8WOf1tgx_tKsy9jGUV3mlg2hn2plqU")
 API_URL = f"https://api.telegram.org/bot{BOT_TOKEN}"
@@ -71,13 +73,16 @@ def run_health_server():
             print(f"Health server hatası: {e}")
             break
 
-def send_chat_action(chat_id, action="upload_photo"):
+def send_chat_action(chat_id, action="upload_photo", message_thread_id=None):
     try:
-        requests.post(f"{API_URL}/sendChatAction", json={"chat_id": chat_id, "action": action}, timeout=10)
+        payload = {"chat_id": chat_id, "action": action}
+        if message_thread_id:
+            payload["message_thread_id"] = message_thread_id
+        requests.post(f"{API_URL}/sendChatAction", json=payload, timeout=10)
     except Exception:
         pass
 
-def send_message(chat_id, text, reply_to_message_id=None):
+def send_message(chat_id, text, reply_to_message_id=None, message_thread_id=None):
     try:
         payload = {
             "chat_id": chat_id,
@@ -86,6 +91,8 @@ def send_message(chat_id, text, reply_to_message_id=None):
         }
         if reply_to_message_id:
             payload["reply_to_message_id"] = reply_to_message_id
+        if message_thread_id:
+            payload["message_thread_id"] = message_thread_id
         return requests.post(f"{API_URL}/sendMessage", json=payload, timeout=15)
     except Exception as e:
         print(f"Mesaj gönderme hatası: {e}")
@@ -533,7 +540,7 @@ def fetch_tweet_media_info(tweet_id):
 
     return None
 
-def send_documents_batch(chat_id, files_data, caption=None, reply_to_message_id=None):
+def send_documents_batch(chat_id, files_data, caption=None, reply_to_message_id=None, message_thread_id=None):
     """
     Görselleri Telegram'a toplu dosya (sendMediaGroup veya sendDocument) olarak gönderir.
     files_data: [(file_name, bytes_data), ...]
@@ -552,6 +559,8 @@ def send_documents_batch(chat_id, files_data, caption=None, reply_to_message_id=
         }
         if reply_to_message_id:
             data["reply_to_message_id"] = reply_to_message_id
+        if message_thread_id:
+            data["message_thread_id"] = message_thread_id
         requests.post(
             f"{API_URL}/sendDocument",
             data=data,
@@ -567,9 +576,12 @@ def send_documents_batch(chat_id, files_data, caption=None, reply_to_message_id=
 
         if len(chunk) == 1:
             fname, fbytes = chunk[0]
+            single_p = {"chat_id": chat_id, "parse_mode": "HTML"}
+            if message_thread_id:
+                single_p["message_thread_id"] = message_thread_id
             requests.post(
                 f"{API_URL}/sendDocument",
-                data={"chat_id": chat_id, "parse_mode": "HTML"},
+                data=single_p,
                 files={"document": (fname, fbytes, "image/png")},
                 timeout=40
             )
@@ -595,6 +607,8 @@ def send_documents_batch(chat_id, files_data, caption=None, reply_to_message_id=
         }
         if reply_to_message_id and chunk_idx == 0:
             payload["reply_to_message_id"] = reply_to_message_id
+        if message_thread_id:
+            payload["message_thread_id"] = message_thread_id
 
         success = False
         try:
@@ -616,6 +630,8 @@ def send_documents_batch(chat_id, files_data, caption=None, reply_to_message_id=
                     p["caption"] = doc_cap
                 if reply_to_message_id and chunk_idx == 0 and i == 0:
                     p["reply_to_message_id"] = reply_to_message_id
+                if message_thread_id:
+                    p["message_thread_id"] = message_thread_id
                 requests.post(
                     f"{API_URL}/sendDocument",
                     data=p,
@@ -627,13 +643,13 @@ def handle_tweet_images(chat_id, msg_id, text):
     """Eski /img çağrılarını yeni akıllı /ig motoruna yönlendirir."""
     handle_ig_command(chat_id, msg_id, text)
 
-def handle_ig_command(chat_id, msg_id, raw_input, include_comments=True):
+def handle_ig_command(chat_id, msg_id, raw_input, include_comments=True, message_thread_id=None):
     """
     Akıllı Instagram Şablon Motoru:
     - /ig (veya doğrudan link): Ana tweet + 100+ popüler yorumlar + fotoğraflar (Full paket)
     - /url (veya /url2): Sadece ana tweet + fotoğraflar (Popüler yorumlara bakmaz)
     """
-    send_chat_action(chat_id, "upload_document")
+    send_chat_action(chat_id, "upload_document", message_thread_id=message_thread_id)
 
     # URL ve Tweet ID tespiti
     url_match = re.search(r"https?://(?:twitter\.com|x\.com|fixupx\.com|vxtwitter\.com|fxtwitter\.com)/([a-zA-Z0-9_]+)/status/(\d+)", raw_input)
@@ -652,7 +668,8 @@ def handle_ig_command(chat_id, msg_id, raw_input, include_comments=True):
             send_message(
                 chat_id,
                 f"⚠️ Lütfen geçerli bir Twitter / X linki belirtin.\nÖrnek:\n<code>{cmd_name} https://x.com/kullanici/status/1234567890</code>",
-                reply_to_message_id=msg_id
+                reply_to_message_id=msg_id,
+                message_thread_id=message_thread_id
             )
             return
 
@@ -661,7 +678,8 @@ def handle_ig_command(chat_id, msg_id, raw_input, include_comments=True):
     status_resp = send_message(
         chat_id,
         f"⏳ <b>[1/{step_total}] Ana tweet şablonu hazırlanıyor...</b>\n<i>Lütfen bekleyin, slaytlar işleniyor.</i>",
-        reply_to_message_id=msg_id
+        reply_to_message_id=msg_id,
+        message_thread_id=message_thread_id
     )
     status_msg_id = status_resp.json().get("result", {}).get("message_id") if (status_resp and status_resp.status_code == 200) else None
 
@@ -676,7 +694,7 @@ def handle_ig_command(chat_id, msg_id, raw_input, include_comments=True):
             if status_msg_id:
                 edit_message(chat_id, status_msg_id, err_text)
             else:
-                send_message(chat_id, err_text, reply_to_message_id=msg_id)
+                send_message(chat_id, err_text, reply_to_message_id=msg_id, message_thread_id=message_thread_id)
             return
 
         resolved_handle = (main_info or {}).get("author") or author_handle
@@ -780,14 +798,19 @@ def handle_ig_command(chat_id, msg_id, raw_input, include_comments=True):
                 f"📐 <b>Ölçü:</b> 1080 × 1350 px (OLED Siyah Arka Plan)\n"
                 "📁 <i>Kayıpsız HD Orijinal PNG (Instagram'a Hazır)</i>"
             )
+            doc_data = {
+                "chat_id": chat_id,
+                "caption": caption,
+                "parse_mode": "HTML",
+            }
+            if msg_id:
+                doc_data["reply_to_message_id"] = msg_id
+            if message_thread_id:
+                doc_data["message_thread_id"] = message_thread_id
+
             requests.post(
                 f"{API_URL}/sendDocument",
-                data={
-                    "chat_id": chat_id,
-                    "caption": caption,
-                    "parse_mode": "HTML",
-                    "reply_to_message_id": msg_id
-                },
+                data=doc_data,
                 files={"document": (slides[0]["filename"], slides[0]["bytes"], "image/png")},
                 timeout=35
             )
@@ -813,14 +836,19 @@ def handle_ig_command(chat_id, msg_id, raw_input, include_comments=True):
             )
 
             # ZIP dosyasını ilet
+            zip_data = {
+                "chat_id": chat_id,
+                "caption": zip_caption,
+                "parse_mode": "HTML",
+            }
+            if msg_id:
+                zip_data["reply_to_message_id"] = msg_id
+            if message_thread_id:
+                zip_data["message_thread_id"] = message_thread_id
+
             requests.post(
                 f"{API_URL}/sendDocument",
-                data={
-                    "chat_id": chat_id,
-                    "caption": zip_caption,
-                    "parse_mode": "HTML",
-                    "reply_to_message_id": msg_id
-                },
+                data=zip_data,
                 files={"document": (zip_filename, zip_buf.getvalue(), "application/zip")},
                 timeout=45
             )
@@ -828,7 +856,7 @@ def handle_ig_command(chat_id, msg_id, raw_input, include_comments=True):
             # B) Slaytları Telegram içinde tek bir albüm baloncuğunda (sendMediaGroup) gönder
             files_data = [(s["filename"], s["bytes"]) for s in slides]
             album_caption = f"📸 <b>Önizleme Albümü ({total_slides} Slayt):</b>\n@{resolved_handle}"
-            send_documents_batch(chat_id, files_data, caption=album_caption, reply_to_message_id=msg_id)
+            send_documents_batch(chat_id, files_data, caption=album_caption, reply_to_message_id=msg_id, message_thread_id=message_thread_id)
 
         # Durum mesajını özetle tamamla
         final_summary = (
@@ -849,7 +877,7 @@ def handle_ig_command(chat_id, msg_id, raw_input, include_comments=True):
         if status_msg_id:
             edit_message(chat_id, status_msg_id, err_msg)
         else:
-            send_message(chat_id, err_msg, reply_to_message_id=msg_id)
+            send_message(chat_id, err_msg, reply_to_message_id=msg_id, message_thread_id=message_thread_id)
 
 def _old_handle_tweet_images(chat_id, msg_id, text):
     """
@@ -970,6 +998,69 @@ def _old_handle_tweet_images(chat_id, msg_id, text):
         else:
             send_message(chat_id, err_msg, reply_to_message_id=msg_id)
 
+def trigger_radar_delivery(chat_id, thread_id=None, reply_to_id=None):
+    """
+    Hedef odaya yeni bir viral tweet bulup tam Instagram paketi (ZIP + Albüm) olarak teslim eder.
+    """
+    cfg = radar_store.get_config()
+    min_faves = cfg.get("min_faves", 5000)
+
+    top_tweet, total_found, err = find_top_new_viral_tweet(min_faves=min_faves)
+    if err or not top_tweet:
+        err_msg = f"⚠️ <b>Radar Bildirimi:</b> {err or 'Yeni viral tweet bulunamadı.'}"
+        send_message(chat_id, err_msg, reply_to_message_id=reply_to_id, message_thread_id=thread_id)
+        return
+
+    tweet_id = top_tweet["id"]
+    tweet_url = top_tweet["url"]
+    author = top_tweet.get("author", "X")
+    name = top_tweet.get("name", author)
+    likes = top_tweet.get("likes", 0)
+
+    # Bildirim başlığı
+    intro_text = (
+        f"🔥 <b>Yeni Viral Tweet Keşfedildi!</b>\n\n"
+        f"👤 <b>Yazar:</b> {name} (@{author})\n"
+        f"❤️ <b>Beğeni:</b> {likes:,}\n"
+        f"🔗 <b>X Link:</b> {tweet_url}\n\n"
+        "🎨 <i>1080×1350 OLED Instagram Post Paketi hazırlanıyor...</i>"
+    )
+    send_message(chat_id, intro_text, reply_to_message_id=reply_to_id, message_thread_id=thread_id)
+
+    # Gönderildi olarak kaydet (tekilleştirme)
+    radar_store.mark_sent(tweet_id, author=author, likes=likes)
+
+    # Mevcut Instagram motorunu tam otomatik çalıştır (Ana tweet + yorumlar + fotoğraflar + ZIP)
+    handle_ig_command(
+        chat_id=chat_id,
+        msg_id=None,
+        raw_input=tweet_url,
+        include_comments=True,
+        message_thread_id=thread_id
+    )
+
+def run_radar_scheduler():
+    """
+    Arka planda çalışan periyodik viral tweet radar zamanlayıcısı.
+    """
+    print("🛰️ Viral Tweet Radarı zamanlayıcısı aktif.")
+    while running:
+        try:
+            cfg = radar_store.get_config()
+            if cfg.get("is_active") and cfg.get("target_chat_id"):
+                interval_secs = cfg.get("interval_minutes", 30) * 60
+                last_run = cfg.get("last_run_timestamp", 0)
+                now = int(time.time())
+
+                if now - last_run >= interval_secs:
+                    print(f"🛰️ Otomatik Radar tetiklendi (Chat: {cfg['target_chat_id']}, Thread: {cfg['target_thread_id']})...")
+                    trigger_radar_delivery(cfg["target_chat_id"], cfg["target_thread_id"])
+        except Exception as e:
+            print(f"Radar zamanlayıcı hatası: {e}")
+
+        # Her 30 saniyede bir kontrol et
+        time.sleep(30)
+
 def handle_update(update):
     message = update.get("message")
     if not message:
@@ -977,6 +1068,7 @@ def handle_update(update):
 
     chat_id = message["chat"]["id"]
     msg_id = message["message_id"]
+    thread_id = message.get("message_thread_id")
 
     # Metin komutları
     if "text" in message:
@@ -995,29 +1087,117 @@ def handle_update(update):
                 "⚡ <b>Yorumsuz Hızlı Şablon (/url):</b>\n"
                 "<code>/url https://x.com/kullanici/status/1234567890</code>\n"
                 " • Popüler yorumlara <b>bakmaz</b>; sadece ana tweet'i ve varsa tweet içi fotoğrafları hızlıca hazırlar.\n\n"
+                "🛰️ <b>Viral Tweet Radarı:</b>\n"
+                " • <code>/radar_start</code> - Bulunulan odayı otomatik hedefe bağlar ve 30 dk'lık taramayı başlatır.\n"
+                " • <code>/radar_now</code> - Beklemeden hemen yeni bir popüler tweet bulup gönderir.\n"
+                " • <code>/radar_stop</code> - Otomatik taramayı duraklatır.\n"
+                " • <code>/radar_status</code> - Radar durumunu ve istatistiklerini gösterir.\n"
+                " • <code>/radar_set 3000</code> - Beğeni eşiğini ayarlar.\n\n"
                 "Hemen dene! 🚀"
             )
-            send_message(chat_id, welcome, reply_to_message_id=msg_id)
+            send_message(chat_id, welcome, reply_to_message_id=msg_id, message_thread_id=thread_id)
+            return
+
+        # /radar_start: Bulunulan odayı viral hedefine bağlar ve radarı aktif eder
+        if text.startswith("/radar_start"):
+            chat_title = message.get("chat", {}).get("title") or "Özel Sohbet"
+            radar_store.set_target(chat_id, thread_id, title=chat_title)
+            cfg = radar_store.get_config()
+            room_str = f"Konu ID: <code>{thread_id}</code>" if thread_id else "Ana Sohbet"
+            resp_txt = (
+                "🎯 <b>Viral Tweet Radarı Aktif Edildi!</b>\n\n"
+                f"📍 <b>Grup/Kanal:</b> {chat_title}\n"
+                f"📌 <b>Oda:</b> {room_str}\n"
+                f"⏱️ <b>Tarama Aralığı:</b> Her {cfg['interval_minutes']} dakikada bir\n"
+                f"🔥 <b>Beğeni Eşiği:</b> Min {cfg['min_faves']:,} Beğeni (Türkçe Popüler)\n\n"
+                "🚀 <i>Bot arka planda sürekli tarayacak ve her yarım saatte bir keşfettiği yeni viral tweetin 1080×1350 OLED Instagram slayt paketini (ZIP + Albüm) doğrudan bu odaya teslim edecektir.</i>\n\n"
+                "ℹ️ <i>Hemen test etmek için:</i> <code>/radar_now</code>\n"
+                "ℹ️ <i>Durdurmak için:</i> <code>/radar_stop</code>"
+            )
+            send_message(chat_id, resp_txt, reply_to_message_id=msg_id, message_thread_id=thread_id)
+            return
+
+        # /radar_stop: Radarı duraklatır
+        if text.startswith("/radar_stop"):
+            radar_store.set_active(False)
+            send_message(
+                chat_id,
+                "⏸️ <b>Viral Tweet Radarı duraklatıldı.</b>\nTekrar başlatmak için <code>/radar_start</code> yazabilirsiniz.",
+                reply_to_message_id=msg_id,
+                message_thread_id=thread_id
+            )
+            return
+
+        # /radar_status: Radar durumunu görüntüler
+        if text.startswith("/radar_status"):
+            cfg = radar_store.get_config()
+            status_emoji = "🟢 Aktif" if cfg["is_active"] else "🔴 Duraklatıldı"
+            room_str = f"Konu {cfg['target_thread_id']}" if cfg["target_thread_id"] else "Ana Sohbet"
+            status_txt = (
+                "📊 <b>Viral Tweet Radarı Durumu:</b>\n\n"
+                f"• <b>Durum:</b> {status_emoji}\n"
+                f"• <b>Kayıtlı Hedef:</b> {cfg.get('target_title') or 'Bilinmiyor'} ({room_str})\n"
+                f"• <b>Tarama Sıklığı:</b> Her {cfg['interval_minutes']} dakika\n"
+                f"• <b>Beğeni Filtresi:</b> Min {cfg['min_faves']:,} Beğeni\n"
+                f"• <b>Gönderilen Toplam Tweet:</b> {cfg['sent_count']} adet"
+            )
+            send_message(chat_id, status_txt, reply_to_message_id=msg_id, message_thread_id=thread_id)
+            return
+
+        # /radar_set: Beğeni eşiğini ayarlar
+        if text.startswith("/radar_set"):
+            parts = text.split()
+            if len(parts) > 1 and parts[1].isdigit():
+                val = int(parts[1])
+                radar_store.set_min_faves(val)
+                send_message(
+                    chat_id,
+                    f"✅ <b>Beğeni eşiği güncellendi:</b> Min {val:,} beğeni.",
+                    reply_to_message_id=msg_id,
+                    message_thread_id=thread_id
+                )
+            else:
+                send_message(
+                    chat_id,
+                    "⚠️ Kullanım: <code>/radar_set 3000</code>",
+                    reply_to_message_id=msg_id,
+                    message_thread_id=thread_id
+                )
+            return
+
+        # /radar_now: Beklemeden hemen şimdi yeni bir viral tweet bul ve gönder
+        if text.startswith("/radar_now"):
+            send_message(
+                chat_id,
+                "🔍 <b>En son viral Türkçe tweet aranıyor...</b>\n<i>Lütfen bekleyin, taranıyor.</i>",
+                reply_to_message_id=msg_id,
+                message_thread_id=thread_id
+            )
+            threading.Thread(
+                target=trigger_radar_delivery,
+                args=(chat_id, thread_id, msg_id),
+                daemon=True
+            ).start()
             return
 
         # /ig komutu kontrolü: Popüler yorumlar + fotoğraflar + ana tweet (Full paket)
         if text.startswith("/ig"):
-            handle_ig_command(chat_id, msg_id, text, include_comments=True)
+            handle_ig_command(chat_id, msg_id, text, include_comments=True, message_thread_id=thread_id)
             return
 
         # /url veya /url2 komutu kontrolü: Popüler yorumlara bakmaz, sadece ana tweet ve fotoğrafları işler
         if text.startswith("/url2") or text.startswith("/url"):
-            handle_ig_command(chat_id, msg_id, text, include_comments=False)
+            handle_ig_command(chat_id, msg_id, text, include_comments=False, message_thread_id=thread_id)
             return
 
         # /img komutu kontrolü (Geriye dönük uyumluluk)
         if text.startswith("/img"):
-            handle_ig_command(chat_id, msg_id, text, include_comments=True)
+            handle_ig_command(chat_id, msg_id, text, include_comments=True, message_thread_id=thread_id)
             return
 
         # Doğrudan atılan Twitter/X linklerini de otomatik algıla (/ig gibi full çalışır)
         if re.search(r"https?://(?:twitter\.com|x\.com|fixupx\.com|vxtwitter\.com|fxtwitter\.com)/[a-zA-Z0-9_]+/status/\d+", text):
-            handle_ig_command(chat_id, msg_id, text, include_comments=True)
+            handle_ig_command(chat_id, msg_id, text, include_comments=True, message_thread_id=thread_id)
             return
 
     file_id = None
@@ -1035,19 +1215,19 @@ def handle_update(update):
             file_id = doc["file_id"]
             file_name = f"insta_{doc.get('file_name', 'image')}.png"
         else:
-            send_message(chat_id, "⚠️ Lütfen bir görsel dosyası (PNG, JPG, WEBP) gönderin.", reply_to_message_id=msg_id)
+            send_message(chat_id, "⚠️ Lütfen bir görsel dosyası (PNG, JPG, WEBP) gönderin.", reply_to_message_id=msg_id, message_thread_id=thread_id)
             return
 
     if not file_id:
         return
 
-    send_chat_action(chat_id, "upload_document")
+    send_chat_action(chat_id, "upload_document", message_thread_id=thread_id)
 
     try:
         # Telegram'dan dosya yolunu al
         get_file_resp = requests.get(f"{API_URL}/getFile?file_id={file_id}", timeout=15).json()
         if not get_file_resp.get("ok"):
-            send_message(chat_id, "❌ Dosya Telegram sunucularından indirilemedi.", reply_to_message_id=msg_id)
+            send_message(chat_id, "❌ Dosya Telegram sunucularından indirilemedi.", reply_to_message_id=msg_id, message_thread_id=thread_id)
             return
 
         file_path = get_file_resp["result"]["file_path"]
@@ -1068,21 +1248,25 @@ def handle_update(update):
 
         # Sadece kayıpsız HD PNG dosyası olarak gönder (Telegram sıkıştırmasını atlar)
         output_buffer.seek(0)
+        doc_payload = {
+            "chat_id": chat_id,
+            "caption": caption,
+            "parse_mode": "HTML",
+            "reply_to_message_id": msg_id
+        }
+        if thread_id:
+            doc_payload["message_thread_id"] = thread_id
+
         requests.post(
             f"{API_URL}/sendDocument",
-            data={
-                "chat_id": chat_id,
-                "caption": caption,
-                "parse_mode": "HTML",
-                "reply_to_message_id": msg_id
-            },
+            data=doc_payload,
             files={"document": (file_name, output_buffer.getvalue(), "image/png")},
             timeout=30
         )
 
     except Exception as e:
         print(f"İşlem hatası: {e}")
-        send_message(chat_id, f"❌ Görsel işlenirken bir hata oluştu: {str(e)}", reply_to_message_id=msg_id)
+        send_message(chat_id, f"❌ Görsel işlenirken bir hata oluştu: {str(e)}", reply_to_message_id=msg_id, message_thread_id=thread_id)
 
 def main():
     print("=" * 55)
@@ -1092,6 +1276,10 @@ def main():
 
     # Koyeb / Cloud platformları için hafif healthcheck sunucusunu başlat
     threading.Thread(target=run_health_server, daemon=True).start()
+
+    # 30 dakikalık periyodik Viral Tweet Radarı zamanlayıcısını başlat
+    threading.Thread(target=run_radar_scheduler, daemon=True).start()
+
     print("Mesajlar dinleniyor (Çıkış için Ctrl+C)...")
 
     offset = 0

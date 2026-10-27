@@ -10,3 +10,5 @@ shots/**/.cache/
 *.png
 *.jpg
 *.jpeg
+cookies.json
+data/
