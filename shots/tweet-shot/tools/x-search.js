@@ -12,7 +12,7 @@
 const puppeteer = require('puppeteer-core');
 const { findChrome } = require('../lib/shot');
 
-async function searchTwitter(query, authToken, ct0, maxWait = 18000) {
+async function searchTwitter(query, authToken, ct0, maxWait = 25000) {
   if (!authToken || !ct0) {
     return {
       success: false,
@@ -31,6 +31,7 @@ async function searchTwitter(query, authToken, ct0, maxWait = 18000) {
       '--disable-gpu',
       '--no-first-run',
       '--disable-extensions',
+      '--disable-blink-features=AutomationControlled',
       '--window-size=1280,800',
     ],
   });
@@ -42,6 +43,18 @@ async function searchTwitter(query, authToken, ct0, maxWait = 18000) {
     const page = await browser.newPage();
     page.setDefaultTimeout(maxWait);
     await page.setViewport({ width: 1280, height: 800 });
+    await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36');
+
+    // Ağ trafiğini hızlandırmak için gereksiz medya ve fontları engelle
+    await page.setRequestInterception(true);
+    page.on('request', (req) => {
+      const type = req.resourceType();
+      if (['image', 'media', 'font', 'video'].includes(type)) {
+        req.abort();
+      } else {
+        req.continue();
+      }
+    });
 
     // Çerezleri enjekte et
     await page.setCookie(

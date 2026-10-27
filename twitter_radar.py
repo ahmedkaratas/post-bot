@@ -101,7 +101,7 @@ def search_viral_tweets(min_faves=5000, days_back=2):
             ["node", SCRAPER_JS, query, auth_token, ct0],
             capture_output=True,
             text=True,
-            timeout=35
+            timeout=75
         )
 
         output = res.stdout.strip()
@@ -113,7 +113,7 @@ def search_viral_tweets(min_faves=5000, days_back=2):
         return data
 
     except subprocess.TimeoutExpired:
-        return {"success": False, "error": "Arama işlemi zaman aşımına uğradı (35s)", "tweets": []}
+        return {"success": False, "error": "Arama işlemi zaman aşımına uğradı (75s)", "tweets": []}
     except Exception as e:
         return {"success": False, "error": str(e), "tweets": []}
 
