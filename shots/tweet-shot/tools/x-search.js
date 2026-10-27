@@ -66,12 +66,12 @@ async function searchTwitter(query, authToken, ct0, maxWait = 20000) {
     // SearchTimeline GraphQL yanıtını sayfa açılmadan ÖNCE dinlemeye başla (en hızlı ve garantili yöntem)
     const responsePromise = page.waitForResponse(
       (res) => res.url().includes('SearchTimeline') && res.status() === 200,
-      { timeout: 12000 }
+      { timeout: 25000 }
     ).catch(() => null);
 
     // Kullanıcının belirttiği f=top arama URL'sine git
     const searchUrl = `https://x.com/search?q=${encodeURIComponent(query)}&f=top`;
-    await page.goto(searchUrl, { waitUntil: 'domcontentloaded', timeout: 15000 }).catch(() => {});
+    await page.goto(searchUrl, { waitUntil: 'domcontentloaded', timeout: 25000 }).catch(() => {});
 
     // SearchTimeline yanıtını bekle (ortalama 2-3 saniyede gelir)
     const searchRes = await responsePromise;
@@ -220,9 +220,9 @@ function extractTweetsRecursively(obj, tweetsList, seenIds) {
 
 async function main() {
   const killTimer = setTimeout(() => {
-    console.error('Hard timeout in x-search main (22s)');
+    console.error('Hard timeout in x-search main (35s)');
     process.exit(1);
-  }, 22000);
+  }, 35000);
   killTimer.unref();
 
   try {

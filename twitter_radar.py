@@ -101,7 +101,7 @@ def search_viral_tweets(min_faves=5000, days_back=3):
             ["node", SCRAPER_JS, query, auth_token, ct0],
             capture_output=True,
             text=True,
-            timeout=40
+            timeout=45
         )
 
         output = res.stdout.strip()

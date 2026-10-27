@@ -55,7 +55,7 @@ class HealthCheckHandler(BaseHTTPRequestHandler):
                     ["node", SCRAPER_JS, "min_faves:5000 lang:tr since:2026-10-25", auth, ct0],
                     capture_output=True,
                     text=True,
-                    timeout=25
+                    timeout=40
                 )
                 res_data = {
                     "duration": round(time.time() - t0, 2),
