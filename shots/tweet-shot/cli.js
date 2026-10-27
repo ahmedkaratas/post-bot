@@ -58,14 +58,14 @@ async function main() {
 
   try {
     const page = await browser.newPage();
-    await page.setViewport({ width: 560, height: 700, deviceScaleFactor: opts.scale });
+    await page.setViewport({ width: 560, height: 1200, deviceScaleFactor: opts.scale });
     await page.setContent(html, { waitUntil: 'networkidle0' });
     await page.waitForFunction("document.documentElement.dataset.ready === '1'", { timeout: 15000 });
 
     const el = await page.$('#shot');
     if (!el) throw new Error('Shot elementi bulunamadı');
 
-    const buf = await el.screenshot({ type: 'png' });
+    const buf = await el.screenshot({ type: 'png', captureBeyondViewport: true });
 
     if (outputPath) {
       fs.writeFileSync(outputPath, buf);

@@ -319,7 +319,8 @@ body{font-family:'Chirp','TwitterChirp','Helvetica Neue',Helvetica,Arial,sans-se
 .mi{position:relative;overflow:hidden;background:var(--line);min-height:80px}
 .mi img{display:block;width:100%;height:100%;object-fit:cover}
 .media.n1{display:block}
-.media.n1 .mi img{max-height:520px;height:auto;object-fit:cover}
+.media.n1 .mi{min-height:auto}
+.media.n1 .mi img{width:100%;height:auto;max-height:none;object-fit:contain}
 .media.n2{grid-template-columns:1fr 1fr;height:220px}
 .media.n3{grid-template-columns:1fr 1fr;grid-template-rows:1fr 1fr;height:300px}
 .media.n3 .m0{grid-row:span 2}
