@@ -7,12 +7,16 @@ en popüler ve henüz gönderilmemiş viral Türkçe tweetleri tespit eder.
 
 import os
 import json
+import time
+import threading
 import subprocess
 from datetime import datetime, timedelta, timezone
 from radar_store import radar_store
 
 PROJECT_DIR = os.path.dirname(os.path.abspath(__file__))
 SCRAPER_JS = os.path.join(PROJECT_DIR, "shots", "tweet-shot", "tools", "x-search.js")
+
+_search_lock = threading.Lock()
 
 def load_twitter_credentials():
     """
@@ -96,12 +100,19 @@ def search_viral_tweets(min_faves=5000, days_back=3):
     since_date = get_dynamic_since_date(days_back=days_back)
     query = f"min_faves:{min_faves} lang:tr since:{since_date}"
 
+    if not _search_lock.acquire(blocking=False):
+        return {
+            "success": False,
+            "error": "Şu anda devam eden başka bir tweet taraması var. Lütfen biraz bekleyin.",
+            "tweets": []
+        }
+
     try:
         res = subprocess.run(
             ["node", SCRAPER_JS, query, auth_token, ct0],
             capture_output=True,
             text=True,
-            timeout=45
+            timeout=50
         )
 
         output = res.stdout.strip()
@@ -113,9 +124,11 @@ def search_viral_tweets(min_faves=5000, days_back=3):
         return data
 
     except subprocess.TimeoutExpired:
-        return {"success": False, "error": "Arama işlemi zaman aşımına uğradı (40s). X sunucuları yanıt vermedi.", "tweets": []}
+        return {"success": False, "error": "Arama işlemi zaman aşımına uğradı (50s). X sunucuları yanıt vermedi.", "tweets": []}
     except Exception as e:
         return {"success": False, "error": str(e), "tweets": []}
+    finally:
+        _search_lock.release()
 
 def find_top_new_viral_tweet(min_faves=5000):
     """

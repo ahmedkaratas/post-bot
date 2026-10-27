@@ -33,8 +33,15 @@ async function searchTwitter(query, authToken, ct0, maxWait = 20000) {
       '--disable-gpu',
       '--no-first-run',
       '--disable-extensions',
+      '--disable-component-update',
+      '--disable-background-networking',
+      '--disable-sync',
+      '--disable-default-apps',
+      '--mute-audio',
+      '--no-default-browser-check',
       '--disable-blink-features=AutomationControlled',
       '--window-size=1280,900',
+      '--js-flags=--max-old-space-size=256',
     ],
   });
 
@@ -220,9 +227,9 @@ function extractTweetsRecursively(obj, tweetsList, seenIds) {
 
 async function main() {
   const killTimer = setTimeout(() => {
-    console.error('Hard timeout in x-search main (35s)');
+    console.error('Hard timeout in x-search main (42s)');
     process.exit(1);
-  }, 35000);
+  }, 42000);
   killTimer.unref();
 
   try {
