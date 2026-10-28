@@ -63,12 +63,19 @@ def get_ai_config():
 # 1. KURAL: FORMAT VE BOYUT DENETİMİ (DİKEY 9:16 REELS)
 # -------------------------------------------------------------
 
-def is_vertical_reels_format(width: int, height: int) -> tuple[bool, str]:
+def is_vertical_reels_format(width_or_dict, height: int = 0) -> tuple[bool, str]:
     """
     Videonun Instagram Reels / TikTok dikey boyutuna uygunluğunu denetler.
     Standart Reels: 9:16 (0.5625 en/boy oranı, yani height / width = 1.77).
     Tolerans: Dikey olmalı (height > width) ve height / width >= 1.25.
+    width_or_dict: int genişlik veya {"width": ..., "height": ...} sözlüğü kabul eder.
     """
+    if isinstance(width_or_dict, dict):
+        width = int(width_or_dict.get("width") or 0)
+        height = int(width_or_dict.get("height") or 0)
+    else:
+        width = int(width_or_dict or 0)
+        height = int(height or 0)
     if not width or not height or width <= 0 or height <= 0:
         # Boyut bilgisi yoksa şimdilik geçir (fallback)
         return True, "Boyut bilgisi belirtilmemiş."

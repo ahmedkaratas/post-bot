@@ -65,20 +65,31 @@ def fetch_reels_feed(session_id: str, count: int = 25):
         raw_items = json_data.get("items", [])
         all_items.extend(raw_items)
 
-        # 2. Sayfa (Daha fazla video taramak için max_id ile pagination)
-        max_id = json_data.get("max_id")
-        if max_id and len(all_items) < 30:
+        # Çoklu Sayfalama (Pagination): Instagram API max_id değerini paging_info içinde döner
+        paging_info = json_data.get("paging_info", {})
+        max_id = paging_info.get("max_id") or json_data.get("max_id")
+
+        # Havuzu 30-40 videoya genişletmek için sonraki sayfaları çek
+        page_count = 1
+        while max_id and len(all_items) < 40 and page_count < 4:
             try:
-                data_page2 = {
+                page_data = {
                     "container_module": "clips_viewer_clips_netego",
                     "max_id": str(max_id)
                 }
-                resp2 = requests.post(url, headers=headers, data=data_page2, timeout=12)
-                if resp2.status_code == 200:
-                    page2_items = resp2.json().get("items", [])
-                    all_items.extend(page2_items)
+                resp_next = requests.post(url, headers=headers, data=page_data, timeout=12)
+                if resp_next.status_code == 200:
+                    j_next = resp_next.json()
+                    next_items = j_next.get("items", [])
+                    if not next_items:
+                        break
+                    all_items.extend(next_items)
+                    max_id = j_next.get("paging_info", {}).get("max_id") or j_next.get("max_id")
+                    page_count += 1
+                else:
+                    break
             except Exception:
-                pass
+                break
 
         return all_items, None
 
