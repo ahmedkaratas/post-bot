@@ -325,6 +325,3 @@ def filter_and_rank_videos(video_list: list, platform: str = "reels") -> list:
         reverse=True
     )
     return approved
-    )
-
-    return approved
