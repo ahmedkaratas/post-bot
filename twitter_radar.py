@@ -18,6 +18,11 @@ PROJECT_DIR = os.path.dirname(os.path.abspath(__file__))
 SCRAPER_JS = os.path.join(PROJECT_DIR, "shots", "tweet-shot", "tools", "x-search.js")
 
 _search_lock = threading.Lock()
+_last_search_cache = {
+    "timestamp": 0,
+    "query": "",
+    "data": None
+}
 
 def load_twitter_credentials():
     """
@@ -101,7 +106,15 @@ def search_viral_tweets(min_faves=5000, days_back=3):
     since_date = get_dynamic_since_date(days_back=days_back)
     query = f"min_faves:{min_faves} lang:tr since:{since_date}"
 
+    # 120 saniyelik önbellek kontrolü (aynı tarama sorgusu için tekrar headless Chrome açmayı engeller)
+    now = time.time()
+    if _last_search_cache["data"] and (now - _last_search_cache["timestamp"] < 120) and _last_search_cache["query"] == query:
+        return _last_search_cache["data"]
+
     if not _search_lock.acquire(blocking=False):
+        # Eğer kilit meşgulse ama önbellekte yakın tarihli veri varsa onu dön
+        if _last_search_cache["data"] and (now - _last_search_cache["timestamp"] < 300):
+            return _last_search_cache["data"]
         return {
             "success": False,
             "error": "Şu anda devam eden başka bir tweet taraması var. Lütfen biraz bekleyin.",
@@ -113,7 +126,7 @@ def search_viral_tweets(min_faves=5000, days_back=3):
             ["node", SCRAPER_JS, query, auth_token, ct0],
             capture_output=True,
             text=True,
-            timeout=30
+            timeout=70
         )
 
         output = res.stdout.strip()
@@ -122,10 +135,14 @@ def search_viral_tweets(min_faves=5000, days_back=3):
             return {"success": False, "error": err, "tweets": []}
 
         data = json.loads(output)
+        if data.get("success"):
+            _last_search_cache["timestamp"] = time.time()
+            _last_search_cache["query"] = query
+            _last_search_cache["data"] = data
         return data
 
     except subprocess.TimeoutExpired:
-        return {"success": False, "error": "Arama işlemi zaman aşımına uğradı (50s). X sunucuları yanıt vermedi.", "tweets": []}
+        return {"success": False, "error": "Arama işlemi zaman aşımına uğradı (70s). X sunucuları yanıt vermedi.", "tweets": []}
     except Exception as e:
         return {"success": False, "error": str(e), "tweets": []}
     finally:
@@ -157,6 +174,59 @@ def find_top_new_viral_tweet(min_faves=5000):
     top_tweet = unseen[0]
 
     return top_tweet, len(unseen), None
+
+from tweet_curator_agent import evaluate_tweet_for_instagram
+
+def find_ai_curated_viral_tweet(min_faves=3000, exclude_id=None):
+    """
+    X arama havuzundaki popüler tweetleri Gemini AI Ajanı ile inceler.
+    Virallik puanı en yüksek olanı ve gerekçesini seçer.
+    exclude_id belirtilirse, standart seçilen tweet hariç diğer en iyi adayı seçer.
+    Dönüş: (top_ai_tweet, total_candidates, ai_eval_dict, err_msg)
+    """
+    res = search_viral_tweets(min_faves=min_faves)
+    if not res.get("success"):
+        return None, 0, None, res.get("error", "Bilinmeyen arama hatası")
+
+    raw_tweets = res.get("tweets", [])
+    if not raw_tweets:
+        return None, 0, None, "Arama kriterlerine uyan tweet bulunamadı."
+
+    # Henüz iletilmemiş olanları filtrele
+    unseen = [t for t in raw_tweets if not radar_store.is_sent(f"ai_{t.get('id')}") and not radar_store.is_sent(t.get('id'))]
+    if exclude_id:
+        unseen_filtered = [t for t in unseen if str(t.get("id")) != str(exclude_id)]
+        if unseen_filtered:
+            unseen = unseen_filtered
+
+    if not unseen:
+        unseen = [t for t in raw_tweets if not radar_store.is_sent(f"ai_{t.get('id')}")]
+        if exclude_id:
+            unseen_filtered = [t for t in unseen if str(t.get("id")) != str(exclude_id)]
+            if unseen_filtered:
+                unseen = unseen_filtered
+
+    if not unseen:
+        return None, len(raw_tweets), None, "Tüm tweetler daha önce iletilmiş."
+
+    # Adayların ilk 6 tanesini AI ile değerlendir
+    evaluated = []
+    for tw in unseen[:6]:
+        eval_res = evaluate_tweet_for_instagram(tw)
+        if eval_res.get("approved"):
+            tw["ai_eval"] = eval_res
+            evaluated.append(tw)
+
+    if evaluated:
+        evaluated.sort(key=lambda x: x["ai_eval"].get("score", 0), reverse=True)
+        best = evaluated[0]
+        return best, len(unseen), best["ai_eval"], None
+
+    # Fallback: En popüler olan
+    unseen.sort(key=lambda x: int(x.get("likes") or 0), reverse=True)
+    fallback_best = unseen[0]
+    fallback_eval = {"approved": True, "score": 7, "reason": "Yüksek beğeni etkileşimi.", "model": "heuristic"}
+    return fallback_best, len(unseen), fallback_eval, None
 
 if __name__ == "__main__":
     print("Testing load_twitter_credentials:")

@@ -11,7 +11,7 @@
 const puppeteer = require('puppeteer-core');
 const { findChrome } = require('../lib/shot');
 
-async function searchTwitter(query, authToken, ct0, maxWait = 20000) {
+async function searchTwitter(query, authToken, ct0, maxWait = 45000) {
   if (!authToken || !ct0) {
     return {
       success: false,
@@ -53,6 +53,17 @@ async function searchTwitter(query, authToken, ct0, maxWait = 20000) {
     page.setDefaultTimeout(maxWait);
     await page.setViewport({ width: 1280, height: 900 });
 
+    // Ağ trafiğini ve RAM kullanımını %70 azaltmak için resim, video ve font indirmelerini iptal et
+    await page.setRequestInterception(true);
+    page.on('request', (req) => {
+      const type = req.resourceType();
+      if (['image', 'media', 'font'].includes(type)) {
+        req.abort();
+      } else {
+        req.continue();
+      }
+    });
+
     // Doğal Chrome User-Agent ve webdriver gizleme
     await page.setUserAgent(
       'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36'
@@ -73,14 +84,14 @@ async function searchTwitter(query, authToken, ct0, maxWait = 20000) {
     // SearchTimeline GraphQL yanıtını sayfa açılmadan ÖNCE dinlemeye başla (en hızlı ve garantili yöntem)
     const responsePromise = page.waitForResponse(
       (res) => res.url().includes('SearchTimeline') && res.status() === 200,
-      { timeout: 16000 }
+      { timeout: 35000 }
     ).catch(() => null);
 
     // Kullanıcının belirttiği f=top arama URL'sine git
     const searchUrl = `https://x.com/search?q=${encodeURIComponent(query)}&f=top`;
-    await page.goto(searchUrl, { waitUntil: 'domcontentloaded', timeout: 16000 }).catch(() => {});
+    await page.goto(searchUrl, { waitUntil: 'domcontentloaded', timeout: 35000 }).catch(() => {});
 
-    // SearchTimeline yanıtını bekle (ortalama 2-3 saniyede gelir)
+    // SearchTimeline yanıtını bekle
     const searchRes = await responsePromise;
     if (searchRes) {
       try {
@@ -227,9 +238,9 @@ function extractTweetsRecursively(obj, tweetsList, seenIds) {
 
 async function main() {
   const killTimer = setTimeout(() => {
-    console.error('Hard timeout in x-search main (25s)');
+    console.error('Hard timeout in x-search main (65s)');
     process.exit(1);
-  }, 25000);
+  }, 65000);
   killTimer.unref();
 
   try {

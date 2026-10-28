@@ -16,7 +16,7 @@ DEFAULT_STATE = {
     "target_thread_id": None,
     "target_title": None,
     "is_active": False,
-    "interval_minutes": 30,
+    "interval_minutes": 120,
     "min_faves": 5000,
     "last_run_timestamp": 0,
     "sent_tweets": {}  # tweet_id -> {"sent_at": timestamp, "author": ..., "likes": ...}
@@ -55,18 +55,20 @@ class RadarStore:
             print(f"Radar veri kaydetme hatası: {e}")
 
     def get_config(self):
+        self.data = self._load()
         return {
             "target_chat_id": self.data.get("target_chat_id"),
             "target_thread_id": self.data.get("target_thread_id"),
             "target_title": self.data.get("target_title"),
             "is_active": self.data.get("is_active", False),
-            "interval_minutes": self.data.get("interval_minutes", 30),
+            "interval_minutes": self.data.get("interval_minutes", 120),
             "min_faves": self.data.get("min_faves", 5000),
             "last_run_timestamp": self.data.get("last_run_timestamp", 0),
             "sent_count": len(self.data.get("sent_tweets", {}))
         }
 
     def set_target(self, chat_id, thread_id=None, title=None):
+        self.data = self._load()
         self.data["target_chat_id"] = chat_id
         self.data["target_thread_id"] = thread_id
         if title:
@@ -75,21 +77,26 @@ class RadarStore:
         self._save()
 
     def set_active(self, active: bool):
+        self.data = self._load()
         self.data["is_active"] = bool(active)
         self._save()
 
     def set_min_faves(self, min_faves: int):
+        self.data = self._load()
         self.data["min_faves"] = max(100, int(min_faves))
         self._save()
 
     def set_interval(self, minutes: int):
+        self.data = self._load()
         self.data["interval_minutes"] = max(5, int(minutes))
         self._save()
 
     def is_sent(self, tweet_id: str) -> bool:
+        self.data = self._load()
         return str(tweet_id) in self.data.get("sent_tweets", {})
 
     def mark_sent(self, tweet_id: str, author: str = "", likes: int = 0):
+        self.data = self._load()
         sent = self.data.setdefault("sent_tweets", {})
         sent[str(tweet_id)] = {
             "sent_at": int(time.time()),
@@ -107,6 +114,7 @@ class RadarStore:
 
     def touch_last_run(self):
         """Son çalışma zamanını günceller."""
+        self.data = self._load()
         self.data["last_run_timestamp"] = int(time.time())
         self._save()
 

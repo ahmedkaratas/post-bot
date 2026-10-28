@@ -18,8 +18,13 @@ import subprocess
 import requests
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from PIL import Image, ImageOps
+from html import escape
 from radar_store import radar_store
-from twitter_radar import find_top_new_viral_tweet
+from twitter_radar import find_top_new_viral_tweet, find_ai_curated_viral_tweet
+from tweet_curator_agent import curate_smart_replies_and_caption
+from reels_store import reels_store
+from reels_radar import find_top_new_viral_reel, download_video_bytes
+from twitter_video_radar import find_top_new_viral_twitter_video, download_twitter_video_bytes
 
 BOT_TOKEN = os.getenv("BOT_TOKEN", "8534996297:AAE9K8WOf1tgx_tKsy9jGUV3mlg2hn2plqU")
 API_URL = f"https://api.telegram.org/bot{BOT_TOKEN}"
@@ -827,42 +832,42 @@ def handle_ig_command(chat_id, msg_id, raw_input, include_comments=True, message
             )
         else:
             # 1'den fazla slayt varsa:
-            # A) ZIP Paketi Oluştur (Tek tıkla tümünü indirmek için)
-            zip_buf = io.BytesIO()
-            with zipfile.ZipFile(zip_buf, "w", zipfile.ZIP_DEFLATED) as zf:
-                for s in slides:
-                    zf.writestr(s["filename"], s["bytes"])
-            zip_buf.seek(0)
-            zip_filename = f"Instagram_Paketi_{resolved_handle}_{tweet_id}.zip"
-
-            zip_caption = (
-                f"📦 <b>Instagram Post Paketi (Tek Tıkla İndir)</b>\n\n"
-                f"👤 <b>Yazar:</b> {resolved_name} (@{resolved_handle})\n"
-                f"📊 <b>İçerik:</b> {total_slides} Slayt\n"
-                f" • 📌 1 Ana Tweet Şablonu\n"
-                + (f" • 💬 {len(qualifying_replies)} Popüler Yorum (100+ Beğeni)\n" if len(qualifying_replies) > 0 else "")
-                + (f" • 🖼️ {added_photos} Kaydırmalı Fotoğraf\n" if added_photos > 0 else "")
-                + f"📐 <b>Ölçü:</b> 1080 × 1350 px (OLED Siyah)\n"
-                f"📁 <i>Tüm slaytlar sıralı ve kayıpsız HD PNG olarak pakettedir.</i>"
-            )
-
-            # ZIP dosyasını ilet
-            zip_data = {
-                "chat_id": chat_id,
-                "caption": zip_caption,
-                "parse_mode": "HTML",
-            }
-            if msg_id:
-                zip_data["reply_to_message_id"] = msg_id
-            if message_thread_id:
-                zip_data["message_thread_id"] = message_thread_id
-
-            requests.post(
-                f"{API_URL}/sendDocument",
-                data=zip_data,
-                files={"document": (zip_filename, zip_buf.getvalue(), "application/zip")},
-                timeout=45
-            )
+            # [DEVRE DIŞI / YORUM SATIRI] A) ZIP Paketi Oluştur (Android telefon kaynak tasarrufu için kapatıldı)
+            # zip_buf = io.BytesIO()
+            # with zipfile.ZipFile(zip_buf, "w", zipfile.ZIP_DEFLATED) as zf:
+            #     for s in slides:
+            #         zf.writestr(s["filename"], s["bytes"])
+            # zip_buf.seek(0)
+            # zip_filename = f"Instagram_Paketi_{resolved_handle}_{tweet_id}.zip"
+            # 
+            # zip_caption = (
+            #     f"📦 <b>Instagram Post Paketi (Tek Tıkla İndir)</b>\n\n"
+            #     f"👤 <b>Yazar:</b> {resolved_name} (@{resolved_handle})\n"
+            #     f"📊 <b>İçerik:</b> {total_slides} Slayt\n"
+            #     f" • 📌 1 Ana Tweet Şablonu\n"
+            #     + (f" • 💬 {len(qualifying_replies)} Popüler Yorum (100+ Beğeni)\n" if len(qualifying_replies) > 0 else "")
+            #     + (f" • 🖼️ {added_photos} Kaydırmalı Fotoğraf\n" if added_photos > 0 else "")
+            #     + f"📐 <b>Ölçü:</b> 1080 × 1350 px (OLED Siyah)\n"
+            #     f"📁 <i>Tüm slaytlar sıralı ve kayıpsız HD PNG olarak pakettedir.</i>"
+            # )
+            # 
+            # # ZIP dosyasını ilet
+            # zip_data = {
+            #     "chat_id": chat_id,
+            #     "caption": zip_caption,
+            #     "parse_mode": "HTML",
+            # }
+            # if msg_id:
+            #     zip_data["reply_to_message_id"] = msg_id
+            # if message_thread_id:
+            #     zip_data["message_thread_id"] = message_thread_id
+            # 
+            # requests.post(
+            #     f"{API_URL}/sendDocument",
+            #     data=zip_data,
+            #     files={"document": (zip_filename, zip_buf.getvalue(), "application/zip")},
+            #     timeout=45
+            # )
 
             # B) Slaytları Telegram içinde tek bir albüm baloncuğunda (sendMediaGroup) gönder
             files_data = [(s["filename"], s["bytes"]) for s in slides]
@@ -877,7 +882,7 @@ def handle_ig_command(chat_id, msg_id, raw_input, include_comments=True, message
             f" • 1 Ana Tweet\n"
             + (f" • {len(qualifying_replies)} Popüler Yorum (100+ beğeni)\n" if len(qualifying_replies) > 0 else "")
             + (f" • {added_photos} Kaydırmalı Fotoğraf\n" if added_photos > 0 else "")
-            + "📲 <i>ZIP dosyasından tek indirmeyle tüm hazır şablonları alabilir veya albümden sırayla Instagram'a yükleyebilirsiniz.</i>"
+            + "📲 <i>Görselleri sırayla Instagram'a kaydırmalı post olarak yükleyebilirsiniz.</i>"
         )
         if status_msg_id:
             edit_message(chat_id, status_msg_id, final_summary)
@@ -1009,55 +1014,196 @@ def _old_handle_tweet_images(chat_id, msg_id, text):
         else:
             send_message(chat_id, err_msg, reply_to_message_id=msg_id)
 
+def deliver_ai_curated_tweet(chat_id, tweet_dict, ai_eval, thread_id=None, reply_to_id=None):
+    """
+    AI Küratörü tarafından seçilen viral tweet'i, akıllıca seçilmiş yorumlar ve
+    yapay zeka tarafından üretilmiş Instagram caption'ı ile birlikte gönderir.
+    """
+    try:
+        tweet_id = tweet_dict["id"]
+        tweet_url = tweet_dict["url"]
+        author = tweet_dict.get("author", "X")
+        name = tweet_dict.get("name", author)
+        likes = tweet_dict.get("likes", 0)
+        score = ai_eval.get("score", 8)
+        reason = ai_eval.get("reason", "Yapay zeka viral içerik analizi")
+        model_used = ai_eval.get("model", "Gemini")
+
+        cli_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "shots", "tweet-shot", "cli.js")
+        slides = []
+
+        # 1. Ana tweet render
+        main_buf, main_info, main_err = render_tweet_to_canvas(tweet_url, cli_path)
+        if main_err or not main_buf:
+            print(f"AI Tweet ana tweet render hatası: {main_err}")
+            return False, main_err
+
+        resolved_handle = (main_info or {}).get("author") or author
+        resolved_name = (main_info or {}).get("name") or name
+
+        slides.append({
+            "filename": f"01_AI_AnaTweet_{resolved_handle}.png",
+            "bytes": main_buf.getvalue(),
+            "desc": f"Ana Tweet (@{resolved_handle})"
+        })
+
+        # 2. Akıllı Yorum Seçimi (Gemini Curator)
+        raw_replies = fetch_qualifying_replies(tweet_id, min_likes=50, max_replies=8)
+        curate_res = curate_smart_replies_and_caption(tweet_dict, raw_replies)
+        selected_replies = curate_res.get("selected_replies", [])
+        caption_text = curate_res.get("instagram_caption", "Düşünceleriniz neler? Yorumlarda buluşalım! 👇\n\n#kesfet #mizah")
+
+        for s_idx, rep in enumerate(selected_replies, start=1):
+            rep_id = rep.get("id")
+            rep_author = rep.get("author", {}).get("screen_name", "user")
+            rep_likes = rep.get("likes", 0)
+            rep_buf, _, rep_err = render_tweet_to_canvas(rep_id, cli_path)
+            if rep_buf and not rep_err:
+                slide_num = len(slides) + 1
+                slides.append({
+                    "filename": f"{slide_num:02d}_AI_Yorum_{rep_author}_{rep_likes}likes.png",
+                    "bytes": rep_buf.getvalue(),
+                    "desc": f"Seçilmiş Yorum (@{rep_author})"
+                })
+
+        # 3. Tweet İçi Fotoğraflar (Varsa)
+        tweet_media = fetch_tweet_media_info(tweet_id)
+        photo_urls = (tweet_media or {}).get("urls", [])
+        if len(photo_urls) == 1:
+            try:
+                img_resp = requests.get(photo_urls[0], timeout=30)
+                if img_resp.status_code == 200:
+                    with Image.open(io.BytesIO(img_resp.content)) as p_img:
+                        pw, ph = p_img.size
+                        p_aspect = pw / ph if ph > 0 else 1.0
+                    if p_aspect < 0.95:
+                        p_buf, _, _ = process_image(img_resp.content)
+                        slides.append({
+                            "filename": f"{len(slides)+1:02d}_AI_Foto_TamBoy.png",
+                            "bytes": p_buf.getvalue(),
+                            "desc": "Tam Boy Görsel"
+                        })
+            except Exception as e:
+                print(f"AI Görsel işleme hatası: {e}")
+        elif len(photo_urls) > 1:
+            for p_idx, p_url in enumerate(photo_urls, start=1):
+                try:
+                    img_resp = requests.get(p_url, timeout=30)
+                    if img_resp.status_code == 200:
+                        p_buf, _, _ = process_image(img_resp.content)
+                        slides.append({
+                            "filename": f"{len(slides)+1:02d}_AI_Foto_{p_idx}.png",
+                            "bytes": p_buf.getvalue(),
+                            "desc": f"Fotoğraf {p_idx}"
+                        })
+                except Exception as p_err:
+                    print(f"AI Fotoğraf {p_idx} hatası: {p_err}")
+
+        # 4. Telegram Bilgilendirme ve Caption Mesajı
+        intro_ai = (
+            f"🤖 <b>[2/2 AI KÜRATÖR SEÇİMİ] Yapay Zeka Özel Viral Paketi</b>\n\n"
+            f"👤 <b>Yazar:</b> {escape(resolved_name)} (@{resolved_handle})\n"
+            f"⭐ <b>AI Virallik Skoru:</b> {score}/10 (Model: <code>{model_used}</code>)\n"
+            f"💡 <b>Seçim Gerekçesi:</b> <i>{escape(reason)}</i>\n"
+            f"❤️ <b>Beğeni:</b> {likes:,}\n"
+            f"🔗 <b>X Linki:</b> {tweet_url}\n\n"
+            f"📝 <b>Instagram Gönderi Metni & Hashtagler (Kopyala-Yapıştır):</b>\n"
+            f"<blockquote>{escape(caption_text)}</blockquote>\n\n"
+            f"🎨 <i>{len(slides)} slaytlık kaydırmalı Instagram paketi iletiliyor...</i>"
+        )
+        send_message(chat_id, intro_ai, reply_to_message_id=reply_to_id, message_thread_id=thread_id)
+
+        # 5. Slaytları Toplu Olarak İlet
+        files_data = [(s["filename"], s["bytes"]) for s in slides]
+        album_caption = f"🤖 <b>AI Seçimli Albüm ({len(slides)} Slayt):</b>\n@{resolved_handle} • Skor: {score}/10"
+        send_documents_batch(
+            chat_id,
+            files_data,
+            caption=album_caption,
+            reply_to_message_id=reply_to_id,
+            message_thread_id=thread_id
+        )
+
+        # 6. Tekilleştirme
+        radar_store.mark_sent(f"ai_{tweet_id}", author=resolved_handle, likes=likes)
+        radar_store.mark_sent(tweet_id, author=resolved_handle, likes=likes)
+        return True, None
+    except Exception as e:
+        print(f"AI Tweet teslimat hatası: {e}")
+        return False, str(e)
+
 def trigger_radar_delivery(chat_id, thread_id=None, reply_to_id=None):
     """
-    Hedef odaya yeni bir viral tweet bulup tam Instagram paketi (ZIP + Albüm) olarak teslim eder.
+    Hedef odaya yeni viral tweetleri A/B test formatında teslim eder:
+    1. Paket: Standart Radar (En yüksek beğenili tweet + 100+ beğenili yorumlar)
+    2. Paket: AI Küratör Radarı (Gemini analizli en esprili/viral tweet + akıllı yorumlar + hazır caption)
     """
     try:
         cfg = radar_store.get_config()
         min_faves = cfg.get("min_faves", 5000)
 
+        std_sent = False
+        ai_sent = False
+        top_std_id = None
+
+        # 1. STANDART SEÇİM
         top_tweet, total_found, err = find_top_new_viral_tweet(min_faves=min_faves)
-        if err or not top_tweet:
-            err_msg = f"⚠️ <b>Radar Bildirimi:</b> {err or 'Yeni viral tweet bulunamadı.'}"
+        if top_tweet:
+            top_std_id = top_tweet["id"]
+            tweet_url = top_tweet["url"]
+            author = top_tweet.get("author", "X")
+            name = top_tweet.get("name", author)
+            likes = top_tweet.get("likes", 0)
+
+            intro_text = (
+                f"📌 <b>[1/2 STANDART SEÇİM] En Yüksek Beğenili Viral Tweet</b>\n\n"
+                f"👤 <b>Yazar:</b> {escape(name)} (@{author})\n"
+                f"❤️ <b>Beğeni:</b> {likes:,}\n"
+                f"🔗 <b>X Link:</b> {tweet_url}\n\n"
+                "🎨 <i>1080×1350 OLED Instagram Post Paketi hazırlanıyor...</i>"
+            )
+            send_message(chat_id, intro_text, reply_to_message_id=reply_to_id, message_thread_id=thread_id)
+            radar_store.mark_sent(top_std_id, author=author, likes=likes)
+
+            handle_ig_command(
+                chat_id=chat_id,
+                msg_id=None,
+                raw_input=tweet_url,
+                include_comments=True,
+                message_thread_id=thread_id
+            )
+            std_sent = True
+        else:
+            print(f"Standart radar sonucu: {err or 'Yeni standart viral tweet bulunamadı.'}")
+
+        # 2. AI KÜRATÖR SEÇİMİ (Gemini Destekli A/B Paketi)
+        ai_tweet, ai_total, ai_eval, ai_err = find_ai_curated_viral_tweet(
+            min_faves=min_faves,
+            exclude_id=top_std_id
+        )
+        if ai_tweet:
+            ok, a_err = deliver_ai_curated_tweet(chat_id, ai_tweet, ai_eval or {}, thread_id=thread_id, reply_to_id=reply_to_id)
+            if ok:
+                ai_sent = True
+            else:
+                print(f"AI Tweet gönderim hatası: {a_err}")
+        else:
+            print(f"AI radar sonucu: {ai_err or 'Yeni AI viral tweet bulunamadı.'}")
+
+        # Eğer ikisi de bulunamadıysa ve kullanıcı manuel tetiklediyse bildirim gönder
+        if not std_sent and not ai_sent and reply_to_id is not None:
+            err_msg = f"⚠️ <b>Radar Bildirimi:</b> Kriterlere uyan yeni bir viral tweet bulunamadı.\n(Standart: {err or 'Yok'}, AI: {ai_err or 'Yok'})"
             send_message(chat_id, err_msg, reply_to_message_id=reply_to_id, message_thread_id=thread_id)
-            return
 
-        tweet_id = top_tweet["id"]
-        tweet_url = top_tweet["url"]
-        author = top_tweet.get("author", "X")
-        name = top_tweet.get("name", author)
-        likes = top_tweet.get("likes", 0)
-
-        # Bildirim başlığı
-        intro_text = (
-            f"🔥 <b>Yeni Viral Tweet Keşfedildi!</b>\n\n"
-            f"👤 <b>Yazar:</b> {name} (@{author})\n"
-            f"❤️ <b>Beğeni:</b> {likes:,}\n"
-            f"🔗 <b>X Link:</b> {tweet_url}\n\n"
-            "🎨 <i>1080×1350 OLED Instagram Post Paketi hazırlanıyor...</i>"
-        )
-        send_message(chat_id, intro_text, reply_to_message_id=reply_to_id, message_thread_id=thread_id)
-
-        # Gönderildi olarak kaydet (tekilleştirme)
-        radar_store.mark_sent(tweet_id, author=author, likes=likes)
-
-        # Mevcut Instagram motorunu tam otomatik çalıştır (Ana tweet + yorumlar + fotoğraflar + ZIP)
-        handle_ig_command(
-            chat_id=chat_id,
-            msg_id=None,
-            raw_input=tweet_url,
-            include_comments=True,
-            message_thread_id=thread_id
-        )
     except Exception as e:
-        print(f"Radar teslimat hatası: {e}")
-        send_message(
-            chat_id,
-            f"❌ <b>Radar Teslimat Hatası:</b> {str(e)}",
-            reply_to_message_id=reply_to_id,
-            message_thread_id=thread_id
-        )
+        print(f"Radar genel teslimat hatası: {e}")
+        if reply_to_id is not None:
+            send_message(
+                chat_id,
+                f"❌ <b>Radar Teslimat Hatası:</b> {str(e)}",
+                reply_to_message_id=reply_to_id,
+                message_thread_id=thread_id
+            )
 
 def run_radar_scheduler():
     """
@@ -1068,7 +1214,7 @@ def run_radar_scheduler():
         try:
             cfg = radar_store.get_config()
             if cfg.get("is_active") and cfg.get("target_chat_id"):
-                interval_secs = cfg.get("interval_minutes", 30) * 60
+                interval_secs = cfg.get("interval_minutes", 120) * 60
                 last_run = cfg.get("last_run_timestamp", 0)
                 now = int(time.time())
 
@@ -1080,6 +1226,200 @@ def run_radar_scheduler():
             print(f"Radar zamanlayıcı hatası: {e}")
 
         # Her 30 saniyede bir kontrol et
+        time.sleep(30)
+
+def deliver_instagram_reel(chat_id, thread_id=None, reply_to_id=None):
+    """Instagram Reels akışından popüler videoyu bulup MP4 olarak Telegram'a gönderir."""
+    try:
+        cfg = reels_store.get_config()
+        min_plays = cfg.get("min_plays", 50000)
+        min_likes = cfg.get("min_likes", 2000)
+        max_age_hours = cfg.get("max_age_hours", 72)
+
+        top_reel, total_found, err = find_top_new_viral_reel(
+            min_plays=min_plays,
+            min_likes=min_likes,
+            max_age_hours=max_age_hours
+        )
+        if err or not top_reel:
+            return False, err or "Yeni viral Instagram Reels bulunamadı."
+
+        code = top_reel["code"]
+        username = top_reel["username"]
+        full_name = top_reel.get("full_name", username)
+        plays = top_reel.get("plays", 0)
+        likes = top_reel.get("likes", 0)
+        reel_url = top_reel["url"]
+        caption_raw = top_reel.get("caption", "").strip()
+
+        send_chat_action(chat_id, "upload_video", message_thread_id=thread_id)
+
+        video_bytes, v_err = download_video_bytes(top_reel["video_url"])
+        if v_err or not video_bytes:
+            return False, f"Instagram video indirme hatası: {v_err}"
+
+        clean_caption = (caption_raw[:300] + "...") if len(caption_raw) > 300 else caption_raw
+        clean_cap_escaped = escape(clean_caption) if clean_caption else "<i>(Açıklama yok)</i>"
+
+        caption = (
+            f"🎬 <b>[Instagram] Yeni Viral Reels!</b>\n\n"
+            f"👤 <b>Yazar:</b> @{username} ({escape(full_name)})\n"
+            f"🔥 <b>İzlenme:</b> {plays:,}\n"
+            f"❤️ <b>Beğeni:</b> {likes:,}\n"
+            f"🔗 <b>Reels Linki:</b> {reel_url}\n\n"
+            f"📝 <b>Açıklama:</b>\n<i>{clean_cap_escaped}</i>"
+        )
+
+        payload = {
+            "chat_id": chat_id,
+            "caption": caption,
+            "parse_mode": "HTML",
+            "supports_streaming": True
+        }
+        if reply_to_id:
+            payload["reply_to_message_id"] = reply_to_id
+        if thread_id:
+            payload["message_thread_id"] = thread_id
+
+        video_filename = f"ig_reel_{code}_{username}.mp4"
+        resp = requests.post(
+            f"{API_URL}/sendVideo",
+            data=payload,
+            files={"video": (video_filename, video_bytes, "video/mp4")},
+            timeout=90
+        )
+
+        if resp.status_code == 200:
+            reels_store.mark_sent(code, username=username, plays=plays, likes=likes)
+            reels_store.mark_sent(f"ig_{code}", username=username, plays=plays, likes=likes)
+            return True, None
+        else:
+            if "can't parse entities" in resp.text:
+                payload.pop("parse_mode", None)
+                payload["caption"] = f"🎬 [Instagram] Viral Reels: @{username}\nİzlenme: {plays:,}\nBeğeni: {likes:,}\n{reel_url}"
+                resp2 = requests.post(f"{API_URL}/sendVideo", data=payload, files={"video": (video_filename, video_bytes, "video/mp4")}, timeout=90)
+                if resp2.status_code == 200:
+                    reels_store.mark_sent(code, username=username, plays=plays, likes=likes)
+                    return True, None
+            return False, f"Telegram video gönderme hatası: {resp.text[:100]}"
+    except Exception as e:
+        return False, str(e)
+
+def deliver_twitter_video(chat_id, thread_id=None, reply_to_id=None):
+    """Twitter/X üzerinden popüler videoyu bulup MP4 olarak Telegram'a gönderir."""
+    try:
+        cfg = reels_store.get_config()
+        min_likes = max(1000, cfg.get("min_likes", 3000))
+
+        top_video, total_found, err = find_top_new_viral_twitter_video(min_faves=min_likes)
+        if err or not top_video:
+            return False, err or "Yeni viral Twitter videosu bulunamadı."
+
+        tweet_id = top_video["id"]
+        author = top_video["author"]
+        name = top_video.get("name", author)
+        likes = top_video.get("likes", 0)
+        retweets = top_video.get("retweets", 0)
+        views = top_video.get("views", 0)
+        tweet_url = top_video["url"]
+        text_raw = top_video.get("text", "").strip()
+
+        send_chat_action(chat_id, "upload_video", message_thread_id=thread_id)
+
+        video_bytes, v_err = download_twitter_video_bytes(top_video["video_url"])
+        if v_err or not video_bytes:
+            return False, f"Twitter video indirme hatası: {v_err}"
+
+        clean_text = (text_raw[:300] + "...") if len(text_raw) > 300 else text_raw
+        clean_text_escaped = escape(clean_text) if clean_text else "<i>(Metin yok)</i>"
+
+        views_str = f"👁️ <b>Görüntülenme:</b> {views:,}\n" if views else ""
+        caption = (
+            f"🐦 <b>[Twitter / X] Yeni Viral Video!</b>\n\n"
+            f"👤 <b>Yazar:</b> @{author} ({escape(name)})\n"
+            f"❤️ <b>Beğeni:</b> {likes:,}\n"
+            f"🔁 <b>Retweet:</b> {retweets:,}\n"
+            + views_str
+            + f"🔗 <b>X Linki:</b> {tweet_url}\n\n"
+            f"📝 <b>Tweet:</b>\n<i>{clean_text_escaped}</i>"
+        )
+
+        payload = {
+            "chat_id": chat_id,
+            "caption": caption,
+            "parse_mode": "HTML",
+            "supports_streaming": True
+        }
+        if reply_to_id:
+            payload["reply_to_message_id"] = reply_to_id
+        if thread_id:
+            payload["message_thread_id"] = thread_id
+
+        video_filename = f"x_video_{tweet_id}_{author}.mp4"
+        resp = requests.post(
+            f"{API_URL}/sendVideo",
+            data=payload,
+            files={"video": (video_filename, video_bytes, "video/mp4")},
+            timeout=90
+        )
+
+        if resp.status_code == 200:
+            reels_store.mark_sent(f"x_{tweet_id}", username=author, plays=views, likes=likes)
+            reels_store.mark_sent(tweet_id, username=author, plays=views, likes=likes)
+            return True, None
+        else:
+            if "can't parse entities" in resp.text:
+                payload.pop("parse_mode", None)
+                payload["caption"] = f"🐦 [Twitter/X] Viral Video: @{author}\nBeğeni: {likes:,}\n{tweet_url}"
+                resp2 = requests.post(f"{API_URL}/sendVideo", data=payload, files={"video": (video_filename, video_bytes, "video/mp4")}, timeout=90)
+                if resp2.status_code == 200:
+                    reels_store.mark_sent(f"x_{tweet_id}", username=author, plays=views, likes=likes)
+                    return True, None
+            return False, f"Telegram video gönderme hatası: {resp.text[:100]}"
+    except Exception as e:
+        return False, str(e)
+
+def trigger_reels_delivery(chat_id, thread_id=None, reply_to_id=None):
+    """
+    Hedef odaya hem Instagram'dan hem de Twitter'dan en popüler yeni viral videoları MP4 olarak teslim eder.
+    """
+    ig_ok, ig_err = deliver_instagram_reel(chat_id, thread_id, reply_to_id=reply_to_id)
+    x_ok, x_err = deliver_twitter_video(chat_id, thread_id, reply_to_id=reply_to_id)
+
+    if not ig_ok and not x_ok:
+        print(f"🎬 Otomatik Reels Radarı Sonucu: Instagram={ig_err}, Twitter={x_err}")
+        if reply_to_id is not None:
+            err_msg = (
+                "⚠️ <b>Viral Video Radarı:</b>\n"
+                f"• 📸 Instagram: {ig_err}\n"
+                f"• 🐦 Twitter / X: {x_err}"
+            )
+            send_message(chat_id, err_msg, reply_to_message_id=reply_to_id, message_thread_id=thread_id)
+    elif not ig_ok:
+        print(f"Instagram video gönderilemedi: {ig_err}")
+    elif not x_ok:
+        print(f"Twitter video gönderilemedi: {x_err}")
+
+def run_reels_scheduler():
+    """
+    Arka planda çalışan periyodik viral Instagram Reels radar zamanlayıcısı.
+    """
+    print("🎬 Viral Reels Radarı zamanlayıcısı aktif.")
+    while running:
+        try:
+            cfg = reels_store.get_config()
+            if cfg.get("is_active") and cfg.get("target_chat_id"):
+                interval_secs = cfg.get("interval_minutes", 120) * 60
+                last_run = cfg.get("last_run_timestamp", 0)
+                now = int(time.time())
+
+                if now - last_run >= interval_secs:
+                    reels_store.touch_last_run()
+                    print(f"🎬 Otomatik Reels Radarı tetiklendi (Chat: {cfg['target_chat_id']}, Thread: {cfg['target_thread_id']})...")
+                    trigger_reels_delivery(cfg["target_chat_id"], cfg["target_thread_id"])
+        except Exception as e:
+            print(f"Reels zamanlayıcı hatası: {e}")
+
         time.sleep(30)
 
 def handle_update(update):
@@ -1104,16 +1444,24 @@ def handle_update(update):
                 " • 📌 OLED dark ana tweet şablonunu hazırlar,\n"
                 " • 💬 Varsa 100+ beğeni almış en popüler yorumları (max 4, min 1) şablona dönüştürür,\n"
                 " • 🖼️ Tweet içindeki kaydırmalı fotoğrafları 1080×1350 tuvale basar,\n"
-                " • 📦 Tek tıkla indirebileceğin <b>ZIP paketi</b> ve Telegram içi <b>Önizleme Albümü</b> olarak teslim eder!\n\n"
+                " • 📸 Telegram içi <b>Önizleme Albümü</b> olarak kayıpsız teslim eder!\n\n"
                 "⚡ <b>Yorumsuz Hızlı Şablon (/url):</b>\n"
                 "<code>/url https://x.com/kullanici/status/1234567890</code>\n"
                 " • Popüler yorumlara <b>bakmaz</b>; sadece ana tweet'i ve varsa tweet içi fotoğrafları hızlıca hazırlar.\n\n"
                 "🛰️ <b>Viral Tweet Radarı:</b>\n"
-                " • <code>/radar_start</code> - Bulunulan odayı otomatik hedefe bağlar ve 30 dk'lık taramayı başlatır.\n"
+                " • <code>/radar_start</code> - Bulunulan odayı otomatik hedefe bağlar ve 2 saatlik (120 dk) taramayı başlatır.\n"
                 " • <code>/radar_now</code> - Beklemeden hemen yeni bir popüler tweet bulup gönderir.\n"
                 " • <code>/radar_stop</code> - Otomatik taramayı duraklatır.\n"
                 " • <code>/radar_status</code> - Radar durumunu ve istatistiklerini gösterir.\n"
-                " • <code>/radar_set 3000</code> - Beğeni eşiğini ayarlar.\n\n"
+                " • <code>/radar_set 3000</code> - Beğeni eşiğini ayarlar.\n"
+                " • <code>/radar_interval 120</code> - Tarama süresini ayarlar (dakika).\n\n"
+                "🎬 <b>Viral Reels & Video Radarı (Agency AI Filtreli):</b>\n"
+                " • <code>/reels_start</code> - Bulunulan odayı (örn: ❗ ViralReels) hedefe bağlar ve 2 saatlik taramayı başlatır.\n"
+                " • <code>/reels_now</code> - Beklemeden hemen yeni bir dikey viral Reels/Video bulup MP4 olarak indirir.\n"
+                " • <code>/reels_stop</code> - Reels radarını duraklatır.\n"
+                " • <code>/reels_status</code> - Reels radarı durumunu ve istatistiklerini gösterir.\n"
+                " • <code>/reels_set 100000</code> - Minimum izlenme eşiğini ayarlar.\n"
+                " • <code>/reels_interval 120</code> - Tarama süresini ayarlar (dakika).\n\n"
                 "Hemen dene! 🚀"
             )
             send_message(chat_id, welcome, reply_to_message_id=msg_id, message_thread_id=thread_id)
@@ -1131,7 +1479,7 @@ def handle_update(update):
                 f"📌 <b>Oda:</b> {room_str}\n"
                 f"⏱️ <b>Tarama Aralığı:</b> Her {cfg['interval_minutes']} dakikada bir\n"
                 f"🔥 <b>Beğeni Eşiği:</b> Min {cfg['min_faves']:,} Beğeni (Türkçe Popüler)\n\n"
-                "🚀 <i>Bot arka planda sürekli tarayacak ve her yarım saatte bir keşfettiği yeni viral tweetin 1080×1350 OLED Instagram slayt paketini (ZIP + Albüm) doğrudan bu odaya teslim edecektir.</i>\n\n"
+                "🚀 <i>Bot arka planda sürekli tarayacak ve her yarım saatte bir keşfettiği yeni viral tweetin 1080×1350 OLED Instagram slayt albümünü doğrudan bu odaya teslim edecektir.</i>\n\n"
                 "ℹ️ <i>Hemen test etmek için:</i> <code>/radar_now</code>\n"
                 "ℹ️ <i>Durdurmak için:</i> <code>/radar_stop</code>"
             )
@@ -1154,13 +1502,16 @@ def handle_update(update):
             cfg = radar_store.get_config()
             status_emoji = "🟢 Aktif" if cfg["is_active"] else "🔴 Duraklatıldı"
             room_str = f"Konu {cfg['target_thread_id']}" if cfg["target_thread_id"] else "Ana Sohbet"
+            mins = cfg['interval_minutes']
+            freq_str = f"{mins // 60} saat" if mins >= 60 and mins % 60 == 0 else f"{mins} dakika"
             status_txt = (
                 "📊 <b>Viral Tweet Radarı Durumu:</b>\n\n"
                 f"• <b>Durum:</b> {status_emoji}\n"
                 f"• <b>Kayıtlı Hedef:</b> {cfg.get('target_title') or 'Bilinmiyor'} ({room_str})\n"
-                f"• <b>Tarama Sıklığı:</b> Her {cfg['interval_minutes']} dakika\n"
+                f"• <b>Tarama Sıklığı:</b> Her {freq_str} bir\n"
                 f"• <b>Beğeni Filtresi:</b> Min {cfg['min_faves']:,} Beğeni\n"
-                f"• <b>Gönderilen Toplam Tweet:</b> {cfg['sent_count']} adet"
+                f"• <b>Gönderilen Toplam Tweet:</b> {cfg['sent_count']} adet\n\n"
+                "ℹ️ <i>Sıklığı değiştirmek için:</i> <code>/radar_interval 120</code>"
             )
             send_message(chat_id, status_txt, reply_to_message_id=msg_id, message_thread_id=thread_id)
             return
@@ -1186,6 +1537,28 @@ def handle_update(update):
                 )
             return
 
+        # /radar_interval: Tarama sıklığını dakika cinsinden ayarlar (örn: /radar_interval 120)
+        if text.startswith("/radar_interval"):
+            parts = text.split()
+            if len(parts) > 1 and parts[1].isdigit():
+                mins = int(parts[1])
+                radar_store.set_interval(mins)
+                hrs = f" ({mins // 60} saat)" if mins >= 60 and mins % 60 == 0 else ""
+                send_message(
+                    chat_id,
+                    f"⏱️ <b>Radar Tarama Sıklığı Güncellendi:</b> Her {mins} dakikada bir{hrs}.",
+                    reply_to_message_id=msg_id,
+                    message_thread_id=thread_id
+                )
+            else:
+                send_message(
+                    chat_id,
+                    "⚠️ Kullanım: <code>/radar_interval 120</code> (2 saat için 120 yazın)",
+                    reply_to_message_id=msg_id,
+                    message_thread_id=thread_id
+                )
+            return
+
         # /radar_now: Beklemeden hemen şimdi yeni bir viral tweet bul ve gönder
         if text.startswith("/radar_now"):
             send_message(
@@ -1196,6 +1569,147 @@ def handle_update(update):
             )
             threading.Thread(
                 target=trigger_radar_delivery,
+                args=(chat_id, thread_id, msg_id),
+                daemon=True
+            ).start()
+            return
+
+        # /reels_start: Bulunulan odayı (örn: ViralReels konusu) hedefe bağlar ve radarı aktif eder
+        if text.startswith("/reels_start"):
+            chat_title = message.get("chat", {}).get("title") or "Özel Sohbet"
+            reels_store.set_target(chat_id, thread_id, title=chat_title)
+            cfg = reels_store.get_config()
+            room_str = f"Konu ID: <code>{thread_id}</code>" if thread_id else "Ana Sohbet"
+            resp_txt = (
+                "🎯 <b>Viral Instagram Reels Radarı Aktif Edildi!</b>\n\n"
+                f"📍 <b>Grup/Kanal:</b> {chat_title}\n"
+                f"📌 <b>Oda:</b> {room_str}\n"
+                f"⏱️ <b>Tarama Aralığı:</b> Her {cfg['interval_minutes']} dakikada bir\n"
+                f"🔥 <b>İzlenme Eşiği:</b> Min {cfg['min_plays']:,} İzlenme\n"
+                f"❤️ <b>Beğeni Eşiği:</b> Min {cfg['min_likes']:,} Beğeni\n\n"
+                "🚀 <i>Bot arka planda Instagram Reels akışını tarayacak ve patlayan videoları doğrudan MP4 video olarak bu odaya indirecektir.</i>\n\n"
+                "ℹ️ <i>Hemen test etmek için:</i> <code>/reels_now</code>\n"
+                "ℹ️ <i>Durdurmak için:</i> <code>/reels_stop</code>\n"
+                "ℹ️ <i>Durum ve İstatistikler:</i> <code>/reels_status</code>"
+            )
+            send_message(chat_id, resp_txt, reply_to_message_id=msg_id, message_thread_id=thread_id)
+            return
+
+        # /reels_stop: Reels radarını duraklatır
+        if text.startswith("/reels_stop"):
+            reels_store.set_active(False)
+            send_message(
+                chat_id,
+                "⏸️ <b>Viral Reels Radarı duraklatıldı.</b>\nTekrar başlatmak için <code>/reels_start</code> yazabilirsiniz.",
+                reply_to_message_id=msg_id,
+                message_thread_id=thread_id
+            )
+            return
+
+        # /reels_status: Reels radarı durumunu görüntüler
+        if text.startswith("/reels_status"):
+            cfg = reels_store.get_config()
+            status_emoji = "🟢 Aktif" if cfg["is_active"] else "🔴 Duraklatıldı"
+            room_str = f"Konu {cfg['target_thread_id']}" if cfg["target_thread_id"] else "Ana Sohbet"
+            mins = cfg['interval_minutes']
+            freq_str = f"{mins // 60} saat" if mins >= 60 and mins % 60 == 0 else f"{mins} dakika"
+            status_txt = (
+                "📊 <b>Viral Reels Radarı Durumu:</b>\n\n"
+                f"• <b>Durum:</b> {status_emoji}\n"
+                f"• <b>Kayıtlı Hedef:</b> {cfg.get('target_title') or 'Bilinmiyor'} ({room_str})\n"
+                f"• <b>Tarama Sıklığı:</b> Her {freq_str} bir\n"
+                f"• <b>İzlenme Filtresi:</b> Min {cfg['min_plays']:,} İzlenme\n"
+                f"• <b>Beğeni Filtresi:</b> Min {cfg['min_likes']:,} Beğeni\n"
+                f"• <b>Gönderilen Toplam Reels:</b> {cfg['sent_count']} adet\n"
+                f"• <b>Küratör & AI Filtresi:</b> 🛡️ Aktif (9:16 Dikey, Anti-Reklam, Anti-Spam)\n\n"
+                "ℹ️ <i>Sıklığı değiştirmek için:</i> <code>/reels_interval 120</code>"
+            )
+            send_message(chat_id, status_txt, reply_to_message_id=msg_id, message_thread_id=thread_id)
+            return
+
+        # /reels_set: İzlenme eşiğini ayarlar
+        if text.startswith("/reels_set"):
+            parts = text.split()
+            if len(parts) > 1 and parts[1].isdigit():
+                val = int(parts[1])
+                reels_store.set_min_plays(val)
+                send_message(
+                    chat_id,
+                    f"✅ <b>Reels izlenme eşiği güncellendi:</b> Min {val:,} izlenme.",
+                    reply_to_message_id=msg_id,
+                    message_thread_id=thread_id
+                )
+            else:
+                send_message(
+                    chat_id,
+                    "⚠️ Kullanım: <code>/reels_set 100000</code>",
+                    reply_to_message_id=msg_id,
+                    message_thread_id=thread_id
+                )
+            return
+
+        # /reels_interval: Reels tarama sıklığını dakika cinsinden ayarlar (örn: /reels_interval 120)
+        if text.startswith("/reels_interval"):
+            parts = text.split()
+            if len(parts) > 1 and parts[1].isdigit():
+                mins = int(parts[1])
+                reels_store.set_interval(mins)
+                hrs = f" ({mins // 60} saat)" if mins >= 60 and mins % 60 == 0 else ""
+                send_message(
+                    chat_id,
+                    f"⏱️ <b>Reels Radar Tarama Sıklığı Güncellendi:</b> Her {mins} dakikada bir{hrs}.",
+                    reply_to_message_id=msg_id,
+                    message_thread_id=thread_id
+                )
+            else:
+                send_message(
+                    chat_id,
+                    "⚠️ Kullanım: <code>/reels_interval 120</code> (2 saat için 120 yazın)",
+                    reply_to_message_id=msg_id,
+                    message_thread_id=thread_id
+                )
+            return
+
+        # /reels_now: Beklemeden hemen şimdi hem Instagram hem de Twitter'dan viral videolar bul ve gönder
+        if text.startswith("/reels_now"):
+            send_message(
+                chat_id,
+                "🔍 <b>Viral Video Radarı devrede!</b>\nHem <b>Instagram Reels</b> hem de <b>Twitter/X</b> taranıyor ve popüler videolar MP4 olarak indiriliyor...\n<i>Lütfen bekleyin...</i>",
+                reply_to_message_id=msg_id,
+                message_thread_id=thread_id
+            )
+            threading.Thread(
+                target=trigger_reels_delivery,
+                args=(chat_id, thread_id, msg_id),
+                daemon=True
+            ).start()
+            return
+
+        # /ig_now: Sadece Instagram'dan viral Reels getir
+        if text.startswith("/ig_now"):
+            send_message(
+                chat_id,
+                "📸 <b>En güncel Instagram Reels taranıyor ve indiriliyor...</b>",
+                reply_to_message_id=msg_id,
+                message_thread_id=thread_id
+            )
+            threading.Thread(
+                target=deliver_instagram_reel,
+                args=(chat_id, thread_id, msg_id),
+                daemon=True
+            ).start()
+            return
+
+        # /x_now: Sadece Twitter/X'ten viral video getir
+        if text.startswith("/x_now"):
+            send_message(
+                chat_id,
+                "🐦 <b>En güncel Twitter/X viral videosu taranıyor ve indiriliyor...</b>",
+                reply_to_message_id=msg_id,
+                message_thread_id=thread_id
+            )
+            threading.Thread(
+                target=deliver_twitter_video,
                 args=(chat_id, thread_id, msg_id),
                 daemon=True
             ).start()
@@ -1300,6 +1814,9 @@ def main():
 
     # 30 dakikalık periyodik Viral Tweet Radarı zamanlayıcısını başlat
     threading.Thread(target=run_radar_scheduler, daemon=True).start()
+
+    # 30 dakikalık periyodik Viral Reels Radarı zamanlayıcısını başlat
+    threading.Thread(target=run_reels_scheduler, daemon=True).start()
 
     print("Mesajlar dinleniyor (Çıkış için Ctrl+C)...")
 
