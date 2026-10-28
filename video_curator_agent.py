@@ -254,30 +254,45 @@ def filter_and_rank_videos(video_list: list, platform: str = "reels") -> list:
     Aday video listesini inceler:
     1. Dikey Reels formatında olmayanları eler.
     2. Reklam ve spam olanları eler.
-    3. AI / Heuristik kalite puanına ve popülerliğe göre en iyiden en kötüye sıralar.
+    3. En popüler ilk 5 adayı seçip yalnızca onları AI ile puanlar (Performans & Kota Tasarrufu).
     """
-    approved = []
-
+    # 1. Format ve Reklam Filtresi
+    pre_filtered = []
     for v in video_list:
         width = v.get("width", 0)
         height = v.get("height", 0)
 
-        # 1. Format kontrolü (Dikey Reels mi?)
-        is_vert, vert_reason = is_vertical_reels_format(width, height)
+        # Format kontrolü (Dikey Reels mi?)
+        is_vert, _ = is_vertical_reels_format(width, height)
         if not is_vert:
             continue
 
-        # 2. Reklam & Spam kontrolü
+        # Reklam & Spam kontrolü
         text = v.get("caption") or v.get("text") or ""
         meta = {
             "is_paid_partnership": v.get("is_paid_partnership", False),
             "sponsor_tags": v.get("sponsor_tags", [])
         }
-        is_ad, ad_reason = detect_ad_or_spam(text, meta)
+        is_ad, _ = detect_ad_or_spam(text, meta)
         if is_ad:
             continue
 
-        # 3. AI / Heuristic Kalite Değerlendirmesi
+        pre_filtered.append(v)
+
+    if not pre_filtered:
+        return []
+
+    # Popülerliğe göre ön sıralama (En yüksek beğeni/izlenme en başta)
+    pre_filtered.sort(
+        key=lambda x: (x.get("plays", 0) or x.get("views", 0), x.get("likes", 0)),
+        reverse=True
+    )
+
+    # 2. Yalnızca en popüler ilk 5 adayı AI ile detaylı incele
+    approved = []
+    candidates_to_eval = pre_filtered[:5]
+    for v in candidates_to_eval:
+        text = v.get("caption") or v.get("text") or ""
         ai_res = evaluate_video_with_ai(
             title="",
             text=text,
@@ -292,7 +307,15 @@ def filter_and_rank_videos(video_list: list, platform: str = "reels") -> list:
         v["curator_source"] = ai_res.get("source", "rules")
         approved.append(v)
 
-    # Sıralama: Önce izlenme/beğeni, ardından küratör kalite puanı
+    # Eğer AI hepsi reddettiyse, temiz filtrelenmişlerin en popüler ilkini al
+    if not approved and pre_filtered:
+        fallback = pre_filtered[0]
+        fallback["curator_score"] = 6
+        fallback["curator_reason"] = "Yüksek etkileşimli temiz video."
+        fallback["curator_source"] = "heuristic_fallback"
+        approved.append(fallback)
+
+    # Son sıralama: Küratör kalite puanı ve etkileşim
     approved.sort(
         key=lambda x: (
             x.get("curator_score", 5),
@@ -300,6 +323,8 @@ def filter_and_rank_videos(video_list: list, platform: str = "reels") -> list:
             x.get("likes", 0)
         ),
         reverse=True
+    )
+    return approved
     )
 
     return approved
