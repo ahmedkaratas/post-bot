@@ -28,16 +28,7 @@ from reels_store import reels_store
 from reels_radar import find_top_new_viral_reel, download_video_bytes
 from twitter_video_radar import find_top_new_viral_twitter_video, download_twitter_video_bytes
 
-BOT_TOKEN = os.getenv("BOT_TOKEN", "")
-if not BOT_TOKEN:
-    # .env dosyasından okumayı dene
-    _env_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env")
-    if os.path.exists(_env_path):
-        with open(_env_path, "r", encoding="utf-8") as _ef:
-            for _line in _ef:
-                if _line.strip().startswith("BOT_TOKEN="):
-                    BOT_TOKEN = _line.strip().split("=", 1)[1].strip("'\"")
-                    break
+BOT_TOKEN = os.getenv("BOT_TOKEN", "").strip()
 
 API_URL = f"https://api.telegram.org/bot{BOT_TOKEN}"
 FILE_URL = f"https://api.telegram.org/file/bot{BOT_TOKEN}"
