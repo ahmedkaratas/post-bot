@@ -245,8 +245,8 @@ async function main() {
 
   try {
     const query = process.argv[2] || 'min_faves:5000 lang:tr';
-    const authToken = process.argv[3] || process.env.TWITTER_AUTH_TOKEN;
-    const ct0 = process.argv[4] || process.env.TWITTER_CT0;
+    const authToken = process.env.TWITTER_AUTH_TOKEN;
+    const ct0 = process.env.TWITTER_CT0;
 
     const result = await searchTwitter(query, authToken, ct0);
     console.log(JSON.stringify(result));
