@@ -15,48 +15,13 @@ import requests
 PROJECT_DIR = os.path.dirname(os.path.abspath(__file__))
 
 def get_ai_config():
-    """Önce .env dosyasından, ardından ortam değişkenlerinden AI ayarlarını okur."""
-    gemini_key = ""
-    gemini_model = "gemini-flash-lite-latest"
-    ai_api_key = ""
-    base_url = "https://api.apmix.ai/v1"
-    ai_model = "claude-sonnet-4-6"
-
-    env_path = os.path.join(PROJECT_DIR, ".env")
-    if os.path.exists(env_path):
-        try:
-            with open(env_path, "r", encoding="utf-8") as f:
-                for line in f:
-                    line = line.strip()
-                    if line.startswith("#") or "=" not in line:
-                        continue
-                    k, v = line.split("=", 1)
-                    k = k.strip()
-                    v = v.strip().strip("'\"")
-                    if k == "GEMINI_API_KEY":
-                        gemini_key = v
-                    elif k == "GEMINI_MODEL":
-                        gemini_model = v
-                    elif k == "AI_API_KEY":
-                        ai_api_key = v
-                    elif k == "AI_BASE_URL":
-                        base_url = v
-                    elif k == "AI_MODEL":
-                        ai_model = v
-        except Exception:
-            pass
-
-    if not gemini_key:
-        gemini_key = os.getenv("GEMINI_API_KEY", "").strip()
-    if not ai_api_key:
-        ai_api_key = os.getenv("AI_API_KEY", "").strip()
-
+    """AI sağlayıcı ayarlarını yalnızca Coolify/container environment değişkenlerinden okur."""
     return {
-        "gemini_key": gemini_key,
-        "gemini_model": gemini_model,
-        "ai_api_key": ai_api_key,
-        "base_url": base_url,
-        "ai_model": ai_model
+        "gemini_key": os.getenv("GEMINI_API_KEY", "").strip(),
+        "gemini_model": os.getenv("GEMINI_MODEL", "gemini-flash-lite-latest").strip(),
+        "ai_api_key": os.getenv("AI_API_KEY", "").strip(),
+        "base_url": os.getenv("AI_BASE_URL", "https://api.apmix.ai/v1").strip().rstrip("/"),
+        "ai_model": os.getenv("AI_MODEL", "claude-sonnet-4-6").strip()
     }
 
 # -------------------------------------------------------------
