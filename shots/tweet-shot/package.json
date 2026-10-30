@@ -1,0 +1,27 @@
+{
+  "name": "tweet-shot",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Turn any public X/Twitter post into a clean PNG. Display settings (time, date, metrics, views, media) are off by default.",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node --watch server.js",
+    "mock": "node tools/render-mock.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "keywords": [
+    "twitter",
+    "screenshot",
+    "tweet",
+    "x",
+    "png"
+  ],
+  "license": "MIT",
+  "dependencies": {
+    "express": "^4.22.3",
+    "puppeteer-core": "^23.11.1"
+  }
+}
