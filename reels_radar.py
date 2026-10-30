@@ -13,26 +13,8 @@ from video_curator_agent import filter_and_rank_videos, is_vertical_reels_format
 PROJECT_DIR = os.path.dirname(os.path.abspath(__file__))
 
 def load_instagram_session_id():
-    """INSTAGRAM_SESSION_ID değerini ortamdan veya .env dosyasından okur."""
-    sid = os.getenv("INSTAGRAM_SESSION_ID", "").strip()
-    if sid:
-        return sid
-
-    env_file = os.path.join(PROJECT_DIR, ".env")
-    if os.path.exists(env_file):
-        try:
-            with open(env_file, "r", encoding="utf-8") as f:
-                for line in f:
-                    line = line.strip()
-                    if line.startswith("#") or not line or "=" not in line:
-                        continue
-                    k, v = line.split("=", 1)
-                    if k.strip() == "INSTAGRAM_SESSION_ID":
-                        return v.strip().strip("'\"")
-        except Exception as e:
-            print(f".env okuma hatası (Reels): {e}")
-
-    return ""
+    """Instagram sessionid değerini yalnızca Coolify/container environment değişkeninden okur."""
+    return os.getenv("INSTAGRAM_SESSION_ID", "").strip()
 
 def fetch_reels_feed(session_id: str, count: int = 25):
     """
@@ -40,7 +22,7 @@ def fetch_reels_feed(session_id: str, count: int = 25):
     Genişletilmiş havuz için çoklu sayfalama desteği içerir.
     """
     if not session_id:
-        return None, "INSTAGRAM_SESSION_ID bulunamadı. Lütfen .env dosyasını kontrol edin."
+        return None, "INSTAGRAM_SESSION_ID bulunamadı. Lütfen Coolify Environment Variables bölümüne ekleyin."
 
     headers = {
         "User-Agent": "Instagram 300.0.0.18.110 (iPhone14,3; iOS 16_6; en_US; en-US; scale=3.00; 1170x2532; 513072223) AppleWebKit/420+",
@@ -149,7 +131,7 @@ def find_top_new_viral_reel(min_plays=50000, min_likes=2000, max_age_hours=96):
     """
     session_id = load_instagram_session_id()
     if not session_id:
-        return None, 0, "INSTAGRAM_SESSION_ID tanımlanmamış. .env dosyanıza ekleyin."
+        return None, 0, "INSTAGRAM_SESSION_ID Coolify Environment Variables içinde tanımlanmamış."
 
     raw_items, err = fetch_reels_feed(session_id)
     if err or not raw_items:
