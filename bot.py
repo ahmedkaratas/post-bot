@@ -2,6 +2,8 @@
 """
 Instagram Post 1080x1350 Auto-Fitter Telegram Bot
 Bot Name: igfoto (@denemekick_bot)
+Repository: https://github.com/ahmedkaratas/post-bot
+Updated by: doguner1 - GitHub senkronizasyon ve baglanti testi basarili!
 """
 
 import os
