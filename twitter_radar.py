@@ -25,63 +25,9 @@ _last_search_cache = {
 }
 
 def load_twitter_credentials():
-    """
-    Twitter auth_token ve ct0 çerezlerini şu öncelikle arar:
-    1. Ortam değişkenleri (os.environ)
-    2. Proje kökündeki .env dosyası
-    3. data/twitter_cookies.json veya cookies.json dosyası
-    """
+    """Twitter oturum çerezlerini yalnızca Coolify/container environment değişkenlerinden okur."""
     auth_token = os.getenv("TWITTER_AUTH_TOKEN", "").strip()
     ct0 = os.getenv("TWITTER_CT0", "").strip()
-
-    if auth_token and ct0:
-        return auth_token, ct0
-
-    # .env dosyasını tara
-    env_file = os.path.join(PROJECT_DIR, ".env")
-    if os.path.exists(env_file):
-        try:
-            with open(env_file, "r", encoding="utf-8") as f:
-                for line in f:
-                    line = line.strip()
-                    if line.startswith("#") or not line or "=" not in line:
-                        continue
-                    k, v = line.split("=", 1)
-                    k = k.strip()
-                    v = v.strip().strip("'\"")
-                    if k == "TWITTER_AUTH_TOKEN" and not auth_token:
-                        auth_token = v
-                    elif k == "TWITTER_CT0" and not ct0:
-                        ct0 = v
-        except Exception as e:
-            print(f".env okuma hatası: {e}")
-
-    if auth_token and ct0:
-        return auth_token, ct0
-
-    # cookies.json tara
-    for c_path in [
-        os.path.join(PROJECT_DIR, "cookies.json"),
-        os.path.join(PROJECT_DIR, "data", "twitter_cookies.json")
-    ]:
-        if os.path.exists(c_path):
-            try:
-                with open(c_path, "r", encoding="utf-8") as f:
-                    data = json.load(f)
-                    if isinstance(data, list):
-                        for item in data:
-                            name = item.get("name")
-                            val = item.get("value")
-                            if name == "auth_token" and not auth_token:
-                                auth_token = val
-                            elif name == "ct0" and not ct0:
-                                ct0 = val
-                    elif isinstance(data, dict):
-                        auth_token = auth_token or data.get("auth_token", "")
-                        ct0 = ct0 or data.get("ct0", "")
-            except Exception as e:
-                print(f"Cookie JSON okuma hatası: {e}")
-
     return auth_token, ct0
 
 def get_dynamic_since_date(days_back=3):
@@ -99,7 +45,7 @@ def search_viral_tweets(min_faves=5000, days_back=3):
     if not auth_token or not ct0:
         return {
             "success": False,
-            "error": "Twitter oturum çerezleri (TWITTER_AUTH_TOKEN ve TWITTER_CT0) tanımlanmamış. Lütfen .env veya Render ortam değişkenlerine ekleyin.",
+            "error": "Twitter oturum çerezleri (TWITTER_AUTH_TOKEN ve TWITTER_CT0) tanımlanmamış. Lütfen Coolify Environment Variables bölümüne ekleyin.",
             "tweets": []
         }
 
