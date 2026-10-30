@@ -68,14 +68,14 @@ def search_viral_video_tweets(min_faves=3000, days_back=3):
         fallback_res = search_fallback_viral_videos(min_faves=min_faves)
         if fallback_res:
             return {"success": True, "tweets": fallback_res, "source": "fallback"}
-        return {"success": False, "error": "Twitter oturum çerezleri (.env) bulunamadı.", "tweets": []}
+        return {"success": False, "error": "Twitter oturum çerezleri Coolify Environment Variables içinde bulunamadı.", "tweets": []}
 
     since_date = get_dynamic_since_date(days_back=days_back)
     query = f"filter:videos min_faves:{min_faves} lang:tr since:{since_date}"
 
     try:
         res = subprocess.run(
-            ["node", SCRAPER_JS, query, auth_token, ct0],
+            ["node", SCRAPER_JS, query],
             capture_output=True,
             text=True,
             timeout=75
