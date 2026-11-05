@@ -1198,6 +1198,8 @@ def trigger_radar_delivery(chat_id, thread_id=None, reply_to_id=None):
             err_msg = f"⚠️ <b>Radar Bildirimi:</b> Kriterlere uyan yeni bir viral tweet bulunamadı.\n(Standart: {err or 'Yok'}, AI: {ai_err or 'Yok'})"
             send_message(chat_id, err_msg, reply_to_message_id=reply_to_id, message_thread_id=thread_id)
 
+        return (std_sent or ai_sent)
+
     except Exception as e:
         print(f"Radar genel teslimat hatası: {e}")
         if reply_to_id is not None:
@@ -1207,6 +1209,7 @@ def trigger_radar_delivery(chat_id, thread_id=None, reply_to_id=None):
                 reply_to_message_id=reply_to_id,
                 message_thread_id=thread_id
             )
+        return False
 
 def run_radar_scheduler():
     """
@@ -1222,9 +1225,13 @@ def run_radar_scheduler():
                 now = int(time.time())
 
                 if now - last_run >= interval_secs:
-                    radar_store.touch_last_run()
                     print(f"🛰️ Otomatik Radar tetiklendi (Chat: {cfg['target_chat_id']}, Thread: {cfg['target_thread_id']})...")
-                    trigger_radar_delivery(cfg["target_chat_id"], cfg["target_thread_id"])
+                    delivered = trigger_radar_delivery(cfg["target_chat_id"], cfg["target_thread_id"])
+                    if delivered:
+                        radar_store.touch_last_run()
+                    else:
+                        print("🛰️ Bu turda yeni viral tweet bulunamadı veya gönderilemedi. 5 dakika sonra tekrar denenecek.")
+                        radar_store.touch_last_run(backoff_seconds=300)
         except Exception as e:
             print(f"Radar zamanlayıcı hatası: {e}")
 
@@ -1279,6 +1286,9 @@ def deliver_instagram_reel(chat_id, thread_id=None, reply_to_id=None):
             "parse_mode": "HTML",
             "supports_streaming": True
         }
+        if top_reel.get("width") and top_reel.get("height"):
+            payload["width"] = int(top_reel["width"])
+            payload["height"] = int(top_reel["height"])
         if reply_to_id:
             payload["reply_to_message_id"] = reply_to_id
         if thread_id:
@@ -1353,6 +1363,9 @@ def deliver_twitter_video(chat_id, thread_id=None, reply_to_id=None):
             "parse_mode": "HTML",
             "supports_streaming": True
         }
+        if top_video.get("width") and top_video.get("height"):
+            payload["width"] = int(top_video["width"])
+            payload["height"] = int(top_video["height"])
         if reply_to_id:
             payload["reply_to_message_id"] = reply_to_id
         if thread_id:
@@ -1403,6 +1416,8 @@ def trigger_reels_delivery(chat_id, thread_id=None, reply_to_id=None):
     elif not x_ok:
         print(f"Twitter video gönderilemedi: {x_err}")
 
+    return (ig_ok or x_ok)
+
 def run_reels_scheduler():
     """
     Arka planda çalışan periyodik viral Instagram Reels radar zamanlayıcısı.
@@ -1417,9 +1432,13 @@ def run_reels_scheduler():
                 now = int(time.time())
 
                 if now - last_run >= interval_secs:
-                    reels_store.touch_last_run()
                     print(f"🎬 Otomatik Reels Radarı tetiklendi (Chat: {cfg['target_chat_id']}, Thread: {cfg['target_thread_id']})...")
-                    trigger_reels_delivery(cfg["target_chat_id"], cfg["target_thread_id"])
+                    delivered = trigger_reels_delivery(cfg["target_chat_id"], cfg["target_thread_id"])
+                    if delivered:
+                        reels_store.touch_last_run()
+                    else:
+                        print("🎬 Bu turda yeni viral video bulunamadı veya gönderilemedi. 5 dakika sonra tekrar denenecek.")
+                        reels_store.touch_last_run(backoff_seconds=300)
         except Exception as e:
             print(f"Reels zamanlayıcı hatası: {e}")
 

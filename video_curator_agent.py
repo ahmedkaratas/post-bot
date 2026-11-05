@@ -51,9 +51,11 @@ def is_vertical_reels_format(width_or_dict, height: int = 0) -> tuple[bool, str]
         return False, f"Yatay veya kare video ({width}x{height}, oran: {ratio}:1). Reels boyutu (9:16 dikey) değil."
 
     ratio = height / width
-    # 4:5 dikey (1.25) veya 9:16 dikey (1.77) kabul edilir.
-    if ratio < 1.20:
-        return False, f"Yetersiz dikey oran ({width}x{height}, oran: {round(ratio, 2)}). Tam Reels formatında değil."
+    # Gerçek 9:16 Reels oranı: height / width = 1.77 (16:9 dikey)
+    # 4:5 (1.25) veya 3:4 (1.33) oranlarındaki dikey videolar Instagram Post (Gönderi) formatıdır, Reels değildir!
+    # Minimum 1.50 dikey oran şartı koyarak post boyutundaki videoları eliyoruz.
+    if ratio < 1.50:
+        return False, f"Post formatında dikey video ({width}x{height}, oran: {round(ratio, 2)}:1). Gerçek 9:16 Reels formatı (en az 1.50 oran) değil."
 
     return True, f"Geçerli dikey Reels formatı ({width}x{height}, oran: {round(ratio, 2)})."
 

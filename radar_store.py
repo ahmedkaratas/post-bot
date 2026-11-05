@@ -11,13 +11,35 @@ import time
 DATA_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
 DATA_FILE = os.path.join(DATA_DIR, "radar_data.json")
 
+def _get_default_radar_chat_id():
+    val = os.getenv("RADAR_TARGET_CHAT_ID", "-1004409412493")
+    if val:
+        try:
+            return int(val)
+        except ValueError:
+            return val
+    return -1004409412493
+
+def _get_default_radar_thread_id():
+    val = os.getenv("RADAR_TARGET_THREAD_ID", "4")
+    if val:
+        try:
+            return int(val)
+        except ValueError:
+            return None
+    return 4
+
+def _get_default_radar_active():
+    val = os.getenv("RADAR_IS_ACTIVE", "true").strip().lower()
+    return val in ("true", "1", "yes", "on")
+
 DEFAULT_STATE = {
-    "target_chat_id": None,
-    "target_thread_id": None,
-    "target_title": None,
-    "is_active": False,
-    "interval_minutes": 120,
-    "min_faves": 5000,
+    "target_chat_id": _get_default_radar_chat_id(),
+    "target_thread_id": _get_default_radar_thread_id(),
+    "target_title": os.getenv("RADAR_TARGET_TITLE", "ViralGrup"),
+    "is_active": _get_default_radar_active(),
+    "interval_minutes": int(os.getenv("RADAR_INTERVAL_MINUTES", "120")),
+    "min_faves": int(os.getenv("RADAR_MIN_FAVES", "5000")),
     "last_run_timestamp": 0,
     "sent_tweets": {}  # tweet_id -> {"sent_at": timestamp, "author": ..., "likes": ...}
 }
@@ -56,13 +78,23 @@ class RadarStore:
 
     def get_config(self):
         self.data = self._load()
+        chat_id = self.data.get("target_chat_id")
+        if chat_id is None:
+            chat_id = _get_default_radar_chat_id()
+        thread_id = self.data.get("target_thread_id")
+        if thread_id is None:
+            thread_id = _get_default_radar_thread_id()
+        is_active = self.data.get("is_active")
+        if is_active is None:
+            is_active = _get_default_radar_active()
+
         return {
-            "target_chat_id": self.data.get("target_chat_id"),
-            "target_thread_id": self.data.get("target_thread_id"),
-            "target_title": self.data.get("target_title"),
-            "is_active": self.data.get("is_active", False),
-            "interval_minutes": self.data.get("interval_minutes", 120),
-            "min_faves": self.data.get("min_faves", 5000),
+            "target_chat_id": chat_id,
+            "target_thread_id": thread_id,
+            "target_title": self.data.get("target_title") or os.getenv("RADAR_TARGET_TITLE", "ViralGrup"),
+            "is_active": is_active,
+            "interval_minutes": self.data.get("interval_minutes", int(os.getenv("RADAR_INTERVAL_MINUTES", "120"))),
+            "min_faves": self.data.get("min_faves", int(os.getenv("RADAR_MIN_FAVES", "5000"))),
             "last_run_timestamp": self.data.get("last_run_timestamp", 0),
             "sent_count": len(self.data.get("sent_tweets", {}))
         }
@@ -112,10 +144,14 @@ class RadarStore:
         self.data["last_run_timestamp"] = int(time.time())
         self._save()
 
-    def touch_last_run(self):
-        """Son çalışma zamanını günceller."""
+    def touch_last_run(self, backoff_seconds: int = 0):
+        """Son çalışma zamanını günceller. backoff_seconds verilirse sonraki çalıştırmayı o kadar süre sonraya öteler."""
         self.data = self._load()
-        self.data["last_run_timestamp"] = int(time.time())
+        if backoff_seconds > 0:
+            interval_secs = self.data.get("interval_minutes", 120) * 60
+            self.data["last_run_timestamp"] = int(time.time()) - interval_secs + backoff_seconds
+        else:
+            self.data["last_run_timestamp"] = int(time.time())
         self._save()
 
 # Global tekil örnek
