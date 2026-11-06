@@ -107,6 +107,10 @@ def parse_reel_item(item):
     width = best_v.get("width", 0)
     height = best_v.get("height", 0)
 
+    # Kapak görseli (thumbnail / poster)
+    img_candidates = media.get("image_versions2", {}).get("candidates", [])
+    thumb_url = img_candidates[0].get("url") if img_candidates else ""
+
     return {
         "code": code,
         "url": f"https://www.instagram.com/reel/{code}/",
@@ -117,6 +121,7 @@ def parse_reel_item(item):
         "taken_at": taken_at,
         "caption": caption_text,
         "video_url": video_url,
+        "thumbnail_url": thumb_url,
         "width": width,
         "height": height,
         "is_paid_partnership": is_paid,

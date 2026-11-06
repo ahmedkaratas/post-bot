@@ -130,6 +130,12 @@ def edit_message(chat_id, message_id, text):
         print(f"Mesaj güncelleme hatası: {e}")
         return None
 
+def delete_message(chat_id, message_id):
+    try:
+        requests.post(f"{API_URL}/deleteMessage", json={"chat_id": chat_id, "message_id": message_id}, timeout=10)
+    except Exception:
+        pass
+
 def is_video_or_gif(reply):
     """
     Yorumda video veya GIF olup olmadığını denetler.
@@ -148,32 +154,69 @@ def is_video_or_gif(reply):
             return True
     return False
 
-def fetch_qualifying_replies(tweet_id, min_likes=100, max_replies=4):
+def fetch_qualifying_replies(tweet_id, min_likes=100, max_replies=6, main_author="", main_likes=0, min_ratio=0.0):
     """
-    Tweetin yorumlarını çeker.
-    - Min 100 beğeni
-    - Video ve GIF içermeyen (sadece resim veya düz metin)
-    - Beğeni sayısına göre büyükten küçüğe sıralı
-    - 100 üzeri 0 ise boş liste, 1 ise 1 tane, daha fazla ise en fazla 4 tane döner.
+    Tweetin yorumlarını fxtwitter conversation endpoint'inden çeker.
+    Filtreler:
+    - Min 100 beğeni (veya ana tweet beğenisine oranlı)
+    - Video ve GIF içermeyen
+    - Metinden mention, link ve emojiler temizlenince en az 8 karakter kalan
+    - Tweet sahibinin kendi yorumu olmayan
+    - Reklam veya spam içermeyen
+    - Beğeni sayısına göre büyükten küçüğe sıralı en fazla max_replies (varsayılan 6) adet
     """
+    from video_curator_agent import detect_ad_or_spam
+
+    effective_min = max(min_likes, int(main_likes * min_ratio)) if min_ratio > 0 and main_likes > 0 else min_likes
     url = f"https://api.fxtwitter.com/2/conversation/{tweet_id}"
     try:
         resp = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=15)
         if resp.status_code != 200:
+            print(f"⚠️ fxtwitter conversation ({tweet_id}) yanıt vermedi: HTTP {resp.status_code}")
             return []
         data = resp.json()
         replies = data.get("replies", [])
-        qualifying = [
-            r for r in replies
-            if (r.get("likes") or 0) >= min_likes and not is_video_or_gif(r)
-        ]
+        print(f"💬 fxtwitter conversation ({tweet_id}): Toplam {len(replies)} adet yanıt döndü.")
+
+        qualifying = []
+        for r in replies:
+            # 1. Beğeni kontrolü
+            r_likes = r.get("likes") or 0
+            if r_likes < effective_min:
+                continue
+
+            # 2. Medya format kontrolü (Video/GIF elenir)
+            if is_video_or_gif(r):
+                continue
+
+            # 3. Tweet sahibinin kendi yanıtı elenir
+            r_author = r.get("author", {}).get("screen_name", "")
+            if main_author and r_author.lower() == str(main_author).lower():
+                continue
+
+            # 4. Metin uzunluğu kontrolü (Mention, URL ve emojiler temizlendikten sonra en az 8 karakter)
+            raw_text = r.get("text", "")
+            cleaned_text = re.sub(r"@\w+", "", raw_text)
+            cleaned_text = re.sub(r"https?://\S+", "", cleaned_text)
+            cleaned_text = re.sub(r"[^\w\sğüşıöçĞÜŞİÖÇ]", "", cleaned_text).strip()
+            if len(cleaned_text) < 8:
+                continue
+
+            # 5. Reklam ve spam kontrolü
+            is_ad, _ = detect_ad_or_spam(raw_text)
+            if is_ad:
+                continue
+
+            # 6. Dil kontrolü (Varsa ve Türkçe değilse ele)
+            r_lang = (r.get("lang") or "").strip().lower()
+            if r_lang and r_lang != "tr":
+                continue
+
+            qualifying.append(r)
+
         qualifying.sort(key=lambda x: x.get("likes", 0), reverse=True)
-        if len(qualifying) == 0:
-            return []
-        elif len(qualifying) == 1:
-            return qualifying[:1]
-        else:
-            return qualifying[:max_replies]
+        print(f"✅ fxtwitter conversation ({tweet_id}): {len(qualifying)} adet nitelikli yorum filtreden geçti (max: {max_replies}).")
+        return qualifying[:max_replies]
     except Exception as e:
         print(f"Yorumları çekme hatası: {e}")
         return []
@@ -335,7 +378,12 @@ def handle_tweet_url(chat_id, msg_id, raw_input):
         if status_msg_id:
             edit_message(chat_id, status_msg_id, "🔍 <b>Yorumlar taranıyor (Min 100 beğeni, videosuz/gifsiz)...</b>")
 
-        qualifying_replies = fetch_qualifying_replies(tweet_id, min_likes=100, max_replies=4)
+        qualifying_replies = fetch_qualifying_replies(
+            tweet_id,
+            min_likes=100,
+            max_replies=6,
+            main_author=main_info.get("author", "")
+        )
         total_slides = 1 + len(qualifying_replies)
 
         slides_to_send = []
@@ -662,7 +710,7 @@ def handle_tweet_images(chat_id, msg_id, text):
     """Eski /img çağrılarını yeni akıllı /ig motoruna yönlendirir."""
     handle_ig_command(chat_id, msg_id, text)
 
-def handle_ig_command(chat_id, msg_id, raw_input, include_comments=True, message_thread_id=None):
+def handle_ig_command(chat_id, msg_id, raw_input, include_comments=True, message_thread_id=None, is_radar=False):
     """
     Akıllı Instagram Şablon Motoru:
     - /ig (veya doğrudan link): Ana tweet + 100+ popüler yorumlar + fotoğraflar (Full paket)
@@ -692,15 +740,17 @@ def handle_ig_command(chat_id, msg_id, raw_input, include_comments=True, message
             )
             return
 
-    # Canlı dinamik durum mesajı
-    step_total = "4" if include_comments else "3"
-    status_resp = send_message(
-        chat_id,
-        f"⏳ <b>[1/{step_total}] Ana tweet şablonu hazırlanıyor...</b>\n<i>Lütfen bekleyin, slaytlar işleniyor.</i>",
-        reply_to_message_id=msg_id,
-        message_thread_id=message_thread_id
-    )
-    status_msg_id = status_resp.json().get("result", {}).get("message_id") if (status_resp and status_resp.status_code == 200) else None
+    # Canlı dinamik durum mesajı (Radar modunda gereksiz kirlilik yaratmaması için kapalı)
+    status_msg_id = None
+    if not is_radar and msg_id:
+        step_total = "4" if include_comments else "3"
+        status_resp = send_message(
+            chat_id,
+            f"⏳ <b>[1/{step_total}] Ana tweet şablonu hazırlanıyor...</b>\n<i>Lütfen bekleyin, slaytlar işleniyor.</i>",
+            reply_to_message_id=msg_id,
+            message_thread_id=message_thread_id
+        )
+        status_msg_id = status_resp.json().get("result", {}).get("message_id") if (status_resp and status_resp.status_code == 200) else None
 
     cli_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "shots", "tweet-shot", "cli.js")
     slides = []  # list of dicts: {"filename": str, "bytes": bytes, "desc": str}
@@ -731,7 +781,12 @@ def handle_ig_command(chat_id, msg_id, raw_input, include_comments=True, message
             if status_msg_id:
                 edit_message(chat_id, status_msg_id, "🔍 <b>[2/4] Popüler yorumlar taranıyor (100+ beğeni, videosuz/gifsiz)...</b>")
 
-            qualifying_replies = fetch_qualifying_replies(tweet_id, min_likes=100, max_replies=4)
+            qualifying_replies = fetch_qualifying_replies(
+            tweet_id,
+            min_likes=100,
+            max_replies=6,
+            main_author=main_info.get("author", "")
+        )
             for idx, rep in enumerate(qualifying_replies, start=1):
                 rep_id = rep.get("id")
                 rep_author = rep.get("author", {}).get("screen_name", "user")
@@ -874,21 +929,17 @@ def handle_ig_command(chat_id, msg_id, raw_input, include_comments=True, message
 
             # B) Slaytları Telegram içinde tek bir albüm baloncuğunda (sendMediaGroup) gönder
             files_data = [(s["filename"], s["bytes"]) for s in slides]
-            album_caption = f"📸 <b>Önizleme Albümü ({total_slides} Slayt):</b>\n@{resolved_handle}"
+            album_caption = (
+                "✨ <b>Instagram Post Şablonu Hazır!</b>\n"
+                f"👤 <b>Yazar:</b> {resolved_name} (@{resolved_handle})\n"
+                f"📐 <b>Ölçü:</b> 1080 × 1350 px (OLED Siyah Arka Plan)\n"
+                "📁 <i>Kayıpsız HD Orijinal PNG (Instagram'a Hazır)</i>"
+            )
             send_documents_batch(chat_id, files_data, caption=album_caption, reply_to_message_id=msg_id, message_thread_id=message_thread_id)
 
-        # Durum mesajını özetle tamamla
-        final_summary = (
-            f"🎉 <b>İşlem Başarıyla Tamamlandı!</b>\n\n"
-            f"👤 <b>Yazar:</b> {resolved_name} (@{resolved_handle})\n"
-            f"📊 <b>Toplam:</b> {total_slides} Slayt Hazırlandı\n"
-            f" • 1 Ana Tweet\n"
-            + (f" • {len(qualifying_replies)} Popüler Yorum (100+ beğeni)\n" if len(qualifying_replies) > 0 else "")
-            + (f" • {added_photos} Kaydırmalı Fotoğraf\n" if added_photos > 0 else "")
-            + "📲 <i>Görselleri sırayla Instagram'a kaydırmalı post olarak yükleyebilirsiniz.</i>"
-        )
+        # Geçici durum mesajını silerek sohbet kirliliğini önle
         if status_msg_id:
-            edit_message(chat_id, status_msg_id, final_summary)
+            delete_message(chat_id, status_msg_id)
 
     except Exception as e:
         print(f"İşlem hatası: {e}")
@@ -1051,7 +1102,13 @@ def deliver_ai_curated_tweet(chat_id, tweet_dict, ai_eval, thread_id=None, reply
         })
 
         # 2. Akıllı Yorum Seçimi (Gemini Curator)
-        raw_replies = fetch_qualifying_replies(tweet_id, min_likes=50, max_replies=8)
+        raw_replies = fetch_qualifying_replies(
+            tweet_id,
+            min_likes=100,
+            max_replies=8,
+            main_author=resolved_handle,
+            main_likes=likes
+        )
         curate_res = curate_smart_replies_and_caption(tweet_dict, raw_replies)
         selected_replies = curate_res.get("selected_replies", [])
         caption_text = curate_res.get("instagram_caption", "Düşünceleriniz neler? Yorumlarda buluşalım! 👇\n\n#kesfet #mizah")
@@ -1102,30 +1159,44 @@ def deliver_ai_curated_tweet(chat_id, tweet_dict, ai_eval, thread_id=None, reply
                 except Exception as p_err:
                     print(f"AI Fotoğraf {p_idx} hatası: {p_err}")
 
-        # 4. Telegram Bilgilendirme ve Caption Mesajı
-        intro_ai = (
-            f"🤖 <b>[2/2 AI KÜRATÖR SEÇİMİ] Yapay Zeka Özel Viral Paketi</b>\n\n"
-            f"👤 <b>Yazar:</b> {escape(resolved_name)} (@{resolved_handle})\n"
-            f"⭐ <b>AI Virallik Skoru:</b> {score}/10 (Model: <code>{model_used}</code>)\n"
-            f"💡 <b>Seçim Gerekçesi:</b> <i>{escape(reason)}</i>\n"
-            f"❤️ <b>Beğeni:</b> {likes:,}\n"
-            f"🔗 <b>X Linki:</b> {tweet_url}\n\n"
-            f"📝 <b>Instagram Gönderi Metni & Hashtagler (Kopyala-Yapıştır):</b>\n"
-            f"<blockquote>{escape(caption_text)}</blockquote>\n\n"
-            f"🎨 <i>{len(slides)} slaytlık kaydırmalı Instagram paketi iletiliyor...</i>"
+        # 4. Telegram Sade Başlık Mesajı
+        ai_header = (
+            f"🤖 <b>Ai Seçimi</b>\n"
+            f"🔗 <b>Orijinal link:</b> {tweet_url}"
         )
-        send_message(chat_id, intro_ai, reply_to_message_id=reply_to_id, message_thread_id=thread_id)
+        send_message(chat_id, ai_header, reply_to_message_id=reply_to_id, message_thread_id=thread_id)
 
-        # 5. Slaytları Toplu Olarak İlet
-        files_data = [(s["filename"], s["bytes"]) for s in slides]
+        # 5. Slaytları İlet
         album_caption = f"🤖 <b>AI Seçimli Albüm ({len(slides)} Slayt):</b>\n@{resolved_handle} • Skor: {score}/10"
-        send_documents_batch(
-            chat_id,
-            files_data,
-            caption=album_caption,
-            reply_to_message_id=reply_to_id,
-            message_thread_id=thread_id
-        )
+        if len(slides) == 1:
+            doc_data = {
+                "chat_id": chat_id,
+                "caption": album_caption,
+                "parse_mode": "HTML",
+            }
+            if reply_to_id:
+                doc_data["reply_to_message_id"] = reply_to_id
+            if thread_id:
+                doc_data["message_thread_id"] = thread_id
+
+            requests.post(
+                f"{API_URL}/sendDocument",
+                data=doc_data,
+                files={"document": (slides[0]["filename"], slides[0]["bytes"], "image/png")},
+                timeout=35
+            )
+        else:
+            files_data = [(s["filename"], s["bytes"]) for s in slides]
+            send_documents_batch(
+                chat_id,
+                files_data,
+                caption=album_caption,
+                reply_to_message_id=reply_to_id,
+                message_thread_id=thread_id
+            )
+
+        # İnce ayraç
+        send_message(chat_id, "----------------------------------------", message_thread_id=thread_id)
 
         # 6. Tekilleştirme
         radar_store.mark_sent(f"ai_{tweet_id}", author=resolved_handle, likes=likes)
@@ -1158,14 +1229,11 @@ def trigger_radar_delivery(chat_id, thread_id=None, reply_to_id=None):
             name = top_tweet.get("name", author)
             likes = top_tweet.get("likes", 0)
 
-            intro_text = (
-                f"📌 <b>[1/2 STANDART SEÇİM] En Yüksek Beğenili Viral Tweet</b>\n\n"
-                f"👤 <b>Yazar:</b> {escape(name)} (@{author})\n"
-                f"❤️ <b>Beğeni:</b> {likes:,}\n"
-                f"🔗 <b>X Link:</b> {tweet_url}\n\n"
-                "🎨 <i>1080×1350 OLED Instagram Post Paketi hazırlanıyor...</i>"
+            header_text = (
+                f"📌 <b>Viral Tweet</b>\n"
+                f"🔗 <b>Orijinal link:</b> {tweet_url}"
             )
-            send_message(chat_id, intro_text, reply_to_message_id=reply_to_id, message_thread_id=thread_id)
+            send_message(chat_id, header_text, reply_to_message_id=reply_to_id, message_thread_id=thread_id)
             radar_store.mark_sent(top_std_id, author=author, likes=likes)
 
             handle_ig_command(
@@ -1173,8 +1241,11 @@ def trigger_radar_delivery(chat_id, thread_id=None, reply_to_id=None):
                 msg_id=None,
                 raw_input=tweet_url,
                 include_comments=True,
-                message_thread_id=thread_id
+                message_thread_id=thread_id,
+                is_radar=True
             )
+            # İnce ayraç
+            send_message(chat_id, "----------------------------------------", message_thread_id=thread_id)
             std_sent = True
         else:
             print(f"Standart radar sonucu: {err or 'Yeni standart viral tweet bulunamadı.'}")

@@ -115,11 +115,28 @@ def find_top_new_viral_tweet(min_faves=5000):
     if not unseen:
         return None, len(raw_tweets), "Bulunan tüm popüler tweetler daha önce iletilmiş."
 
-    # En yüksek beğeniye sahip olanı seç
-    unseen.sort(key=lambda x: int(x.get("likes") or 0), reverse=True)
-    top_tweet = unseen[0]
+    from video_curator_agent import detect_ad_or_spam
 
-    return top_tweet, len(unseen), None
+    # Sert filtreler: Promoted/reklam, yabancı dil ve spam olanları ele
+    valid_unseen = []
+    for t in unseen:
+        if t.get("is_promoted"):
+            continue
+        lang = (t.get("lang") or "").strip().lower()
+        if lang and lang != "tr":
+            continue
+        if detect_ad_or_spam(t.get("text", ""))[0]:
+            continue
+        valid_unseen.append(t)
+
+    if not valid_unseen:
+        return None, len(unseen), "Sert filtrelere (Türkçe, reklamsız) uyan yeni tweet bulunamadı."
+
+    # En yüksek beğeniye sahip olanı seç
+    valid_unseen.sort(key=lambda x: int(x.get("likes") or 0), reverse=True)
+    top_tweet = valid_unseen[0]
+
+    return top_tweet, len(valid_unseen), None
 
 from tweet_curator_agent import evaluate_tweet_for_instagram
 
@@ -168,11 +185,8 @@ def find_ai_curated_viral_tweet(min_faves=3000, exclude_id=None):
         best = evaluated[0]
         return best, len(unseen), best["ai_eval"], None
 
-    # Fallback: En popüler olan
-    unseen.sort(key=lambda x: int(x.get("likes") or 0), reverse=True)
-    fallback_best = unseen[0]
-    fallback_eval = {"approved": True, "score": 7, "reason": "Yüksek beğeni etkileşimi.", "model": "heuristic"}
-    return fallback_best, len(unseen), fallback_eval, None
+    # Sert filtre kuralı: AI onaylamadıysa zorlama fallback yapma, bu turu boş geç
+    return None, len(unseen), None, "Bu turda AI küratör onayını geçen (Türkçe, reklamsız ve kaliteli) yeni viral tweet bulunamadı."
 
 if __name__ == "__main__":
     print("Testing load_twitter_credentials:")

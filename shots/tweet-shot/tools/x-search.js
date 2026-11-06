@@ -135,11 +135,25 @@ async function searchTwitter(query, authToken, ct0, maxWait = 45000) {
           const match = targetHref.match(/\/([a-zA-Z0-9_]+)\/status\/(\d+)/);
           const textEl = art.querySelector('div[data-testid="tweetText"]');
 
+          let likeCount = 0;
+          let hasMetrics = false;
+          const likeBtn = art.querySelector('button[data-testid="like"]');
+          if (likeBtn) {
+            const label = likeBtn.getAttribute('aria-label') || '';
+            const numMatch = label.match(/(\d[\d,\.]*)/);
+            if (numMatch) {
+              likeCount = parseInt(numMatch[1].replace(/[,\.]/g, ''), 10) || 0;
+              hasMetrics = true;
+            }
+          }
+
           return {
             id: match ? match[2] : null,
             author: match ? match[1] : '',
             url: match ? `https://x.com/${match[1]}/status/${match[2]}` : '',
             text: textEl ? textEl.innerText.trim() : '',
+            likes: likeCount,
+            has_metrics: hasMetrics,
           };
         }).filter((t) => t.id && t.author);
       }).catch(() => []);
@@ -147,15 +161,26 @@ async function searchTwitter(query, authToken, ct0, maxWait = 45000) {
       for (const dt of domTweets) {
         if (!seenIds.has(dt.id)) {
           seenIds.add(dt.id);
+          // Sayısal verisi olmayan adayı varsayılan 5000 basmak yerine metriksiz olarak kaydet
           tweetsFound.push({
             id: dt.id,
             author: dt.author,
             name: dt.author,
             text: dt.text,
-            likes: 5000,
+            likes: dt.likes || 0,
             retweets: 0,
+            replies: 0,
+            quotes: 0,
+            bookmarks: 0,
+            views: 0,
+            lang: '',
             url: dt.url,
             createdAt: '',
+            is_promoted: false,
+            has_video: false,
+            video_url: '',
+            has_metrics: Boolean(dt.has_metrics),
+            is_metric_missing: !dt.has_metrics
           });
         }
       }
@@ -188,6 +213,36 @@ async function searchTwitter(query, authToken, ct0, maxWait = 45000) {
   }
 }
 
+function parseMetricCount(val) {
+  if (val === undefined || val === null || val === '') return 0;
+  if (typeof val === 'number') return val;
+  const cleaned = String(val).replace(/,/g, '').trim();
+  const num = parseInt(cleaned, 10);
+  return isNaN(num) ? 0 : num;
+}
+
+function extractVideoMedia(legacy, tweetObj) {
+  const extended = legacy?.extended_entities || tweetObj?.extended_entities;
+  const mediaList = extended?.media || [];
+  for (const m of mediaList) {
+    if ((m.type === 'video' || m.type === 'animated_gif') && m.video_info) {
+      const variants = m.video_info.variants || [];
+      const mp4s = variants
+        .filter((v) => v.content_type === 'video/mp4' && v.url)
+        .sort((a, b) => (b.bitrate || 0) - (a.bitrate || 0));
+      return {
+        has_video: true,
+        video_url: mp4s[0]?.url || '',
+        aspect_ratio: m.video_info.aspect_ratio || [],
+        width: m.original_info?.width || 0,
+        height: m.original_info?.height || 0,
+        thumbnail_url: m.media_url_https || ''
+      };
+    }
+  }
+  return { has_video: false, video_url: '', aspect_ratio: [], width: 0, height: 0, thumbnail_url: '' };
+}
+
 /**
  * Twitter'ın karmaşık GraphQL JSON çıktısını derinlemesine tarayarak tweet objelerini bulur.
  */
@@ -209,16 +264,39 @@ function extractTweetsRecursively(obj, tweetsList, seenIds) {
           ? `https://x.com/${authorHandle}/status/${tweetId}`
           : `https://x.com/i/status/${tweetId}`;
 
+        // Promoted / Sponsorlu reklam tespiti
+        const isPromoted = Boolean(
+          tweetObj.promotedMetadata ||
+          tweetObj.promoted_metadata ||
+          obj.promotedMetadata ||
+          obj.itemContent?.promotedMetadata ||
+          (typeof tweetObj.source === 'string' && tweetObj.source.toLowerCase().includes('promoted'))
+        );
+
+        const vInfo = extractVideoMedia(legacy, tweetObj);
+
         seenIds.add(tweetId);
         tweetsList.push({
           id: tweetId,
           author: authorHandle,
           name: authorName,
           text: legacy.full_text || '',
-          likes: legacy.favorite_count || 0,
-          retweets: legacy.retweet_count || 0,
-          url: cleanUrl,
+          likes: parseMetricCount(legacy.favorite_count),
+          retweets: parseMetricCount(legacy.retweet_count),
+          replies: parseMetricCount(legacy.reply_count),
+          quotes: parseMetricCount(legacy.quote_count),
+          bookmarks: parseMetricCount(legacy.bookmark_count),
+          views: parseMetricCount(tweetObj.views?.count),
+          lang: legacy.lang || '',
           createdAt: legacy.created_at || '',
+          url: cleanUrl,
+          is_promoted: isPromoted,
+          has_video: vInfo.has_video,
+          video_url: vInfo.video_url,
+          video_width: vInfo.width,
+          video_height: vInfo.height,
+          video_thumbnail: vInfo.thumbnail_url,
+          has_metrics: true
         });
       }
     }

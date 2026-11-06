@@ -194,12 +194,23 @@ def find_top_new_viral_twitter_video(min_faves=3000):
 
     # İlk 10 tweeti incele ve video detaylarını topla
     for t in unseen[:10]:
+        if t.get("is_promoted"):
+            continue
+        lang = (t.get("lang") or "").strip().lower()
+        if lang and lang != "tr":
+            continue
+
         t_id = t.get("id")
         author = t.get("author", "")
         v_details = fetch_twitter_video_details(t_id, author=author)
         if v_details and v_details.get("video_url"):
             if not v_details.get("likes") and t.get("likes"):
                 v_details["likes"] = t.get("likes")
+            v_details["views"] = t.get("views", 0)
+            v_details["retweets"] = t.get("retweets", 0)
+            v_details["replies"] = t.get("replies", 0)
+            if t.get("video_thumbnail") and not v_details.get("thumbnail_url"):
+                v_details["thumbnail_url"] = t.get("video_thumbnail")
             candidate_videos.append(v_details)
 
     if not candidate_videos:
@@ -214,14 +225,8 @@ def find_top_new_viral_twitter_video(min_faves=3000):
     if qualified:
         return qualified[0], len(qualified), None
 
-    # Eğer katı dikey orana uyan bulunamadıysa ama reklamsız videolar varsa:
-    clean_non_spam = [v for v in candidate_videos if not detect_ad_or_spam(v.get("text", ""))[0]]
-    if clean_non_spam:
-        # En azından en popüler reklamsız olanı seç
-        clean_non_spam.sort(key=lambda x: x.get("likes", 0), reverse=True)
-        return clean_non_spam[0], len(clean_non_spam), None
-
-    return None, len(unseen), "Kriterlere ve dikey video formatına uyan yeni Twitter videosu bulunamadı."
+    # Sert filtre kuralı: Dikey Reels formatına uymayan veya AI onayından geçmeyen hiçbir video gönderilmez
+    return None, len(unseen), "Bu turda dikey Reels formatına ve AI onayına uyan yeni Twitter videosu bulunamadı."
 
 def download_twitter_video_bytes(video_url: str):
     """Twitter MP4 video dosyasını indirir."""

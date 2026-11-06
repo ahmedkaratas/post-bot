@@ -28,6 +28,8 @@ ENV PYTHONUNBUFFERED=1
 ENV PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium
 ENV PORT=8080
 
+VOLUME ["/app/data"]
+
 EXPOSE 8080
 
 CMD ["python", "bot.py"]

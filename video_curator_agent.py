@@ -63,31 +63,40 @@ def is_vertical_reels_format(width_or_dict, height: int = 0) -> tuple[bool, str]
 # 2. KURAL: ANTİ-REKLAM, ANTİ-SPAM VE KALİTE FİLTRESİ
 # -------------------------------------------------------------
 
-SPAM_KEYWORDS = [
+# Kesin ret (Hard Ban) gerektiren ifadeler: Bu kelimeler geçiyorsa içerik anında elenir.
+HARD_BAN_KEYWORDS = [
     # Reklam ve İş birliği
     r"#reklam\b", r"#işbirliği\b", r"#isbirligi\b", r"#sponsorlu\b", r"\bsponsorlu\b",
     r"\biş birliği\b", r"\bisbirligi\b", r"\bindirim kodu\b", r"\bkupon kodu\b", r"\bhediye çeki\b",
-    # Satış ve Yönlendirme
+    # Doğrudan Satış / Profil Linki
     r"\blinki profilde\b", r"\blink biyografide\b", r"\bbio'daki link\b", r"\bbiodaki link\b",
-    r"\bprofildeki link\b", r"\bprofildeki linkten\b", r"\bsatın al\b", r"\bsipariş için\b",
-    r"\bfiyat için dm\b", r"\bdm atın\b", r"\bdm'den yazın\b", r"\bwhatsapp\b", r"\btelegram\b",
-    r"\btrendyol\b", r"\bhepsiburada\b", r"\bamazon link\b",
-    # Dolandırıcılık, Bahis, Kripto Sinyal
-    r"\bkripto\b", r"\bforex\b", r"\byatırım tavsiyesi\b", r"\bgünlük kazanç\b",
-    r"\bevdən qazanc\b", r"\bbahis\b", r"\bkumar\b", r"\bslot\b", r"\bcasino\b",
-    r"\bdeneme bonusu\b", r"\byatırımsız kazanç\b",
+    r"\bprofildeki link\b", r"\bprofildeki linkten\b",
+    # Dolandırıcılık, Kumar, Bahis, Kripto Sinyal
+    r"\bbahis\b", r"\bkumar\b", r"\bslot\b", r"\bcasino\b",
+    r"\bdeneme bonusu\b", r"\byatırımsız kazanç\b", r"\byatırım tavsiyesi\b",
+    r"\bgünlük kazanç\b", r"\bevdən qazanc\b",
     # Çekiliş ve Takipçi Tuzağı
     r"\bçekiliş\b", r"\bcekilis\b", r"\bhediye ediyoruz\b", r"\bbu gönderiyi beğen ve kaydet\b",
     r"\btakip et kazan\b"
 ]
 
-SPAM_REGEX = re.compile("|".join(SPAM_KEYWORDS), re.IGNORECASE)
+# Şüpheli ifadeler: Komik veya meşru içerikte de geçebileceği için kesin ret değil, puan cezası (-2) uygulanır.
+SUSPICIOUS_KEYWORDS = [
+    r"\bwhatsapp\b", r"\btelegram\b", r"\btrendyol\b", r"\bhepsiburada\b", r"\bamazon link\b",
+    r"\bkripto\b", r"\bforex\b", r"\bsatın al\b", r"\bsipariş için\b", r"\bfiyat için dm\b",
+    r"\bdm atın\b", r"\bdm'den yazın\b"
+]
+
+HARD_BAN_REGEX = re.compile("|".join(HARD_BAN_KEYWORDS), re.IGNORECASE)
+SUSPICIOUS_REGEX = re.compile("|".join(SUSPICIOUS_KEYWORDS), re.IGNORECASE)
 
 def detect_ad_or_spam(text: str, metadata: dict = None) -> tuple[bool, str]:
     """
-    Video açıklamasında veya meta verisinde reklam, spam veya dolandırıcılık tespiti yapar.
+    Video açıklamasında veya meta verisinde KESİN RET gerektiren reklam/spam tespiti yapar.
     """
     if metadata:
+        if metadata.get("is_promoted"):
+            return True, "Twitter/X Promoted (sponsorlu) reklam işareti tespit edildi."
         if metadata.get("is_paid_partnership"):
             return True, "Sponsorlu iş birliği etiketi (is_paid_partnership) tespit edildi."
         if metadata.get("sponsor_tags"):
@@ -96,37 +105,44 @@ def detect_ad_or_spam(text: str, metadata: dict = None) -> tuple[bool, str]:
     if not text:
         return False, "Metin boş."
 
-    match = SPAM_REGEX.search(text)
+    match = HARD_BAN_REGEX.search(text)
     if match:
-        return True, f"Reklam/Spam ifadesi tespit edildi: '{match.group(0)}'"
+        return True, f"Kesin reklam/spam ifadesi tespit edildi: '{match.group(0)}'"
 
     return False, "Temiz içerik."
+
+def calculate_ad_penalty(text: str) -> int:
+    """Şüpheli ticari kelimeler geçiyorsa ceza puanı döner (örn: -2)."""
+    if not text:
+        return 0
+    matches = SUSPICIOUS_REGEX.findall(text)
+    return min(4, len(matches) * 2)
 
 # -------------------------------------------------------------
 # 3. KURAL: AI DESTEKLİ VİRAL VE KALİTE DEĞERLENDİRMESİ
 # -------------------------------------------------------------
 
-# Google Gemini modellerinin kalite ve kota sırasına göre basamaklı zinciri:
-# En akıllı modelden başlar, kota (429) veya yoğunluk (503) durumunda anında bir alt modele devreder.
+# Google Gemini API doğrulanmış aktif model basamakları:
 GEMINI_MODELS_CASCADE = [
-    "gemini-3.8-flash",      # 1. Öncelik: En üstün akıl ve kalite (RPD: 20)
-    "gemini-3.6-flash",      # 2. Öncelik: Hızlı ve yüksek kalite (RPD: 20)
-    "gemini-3.5-flash-lite", # 3. Öncelik: Günde 500 İSTEK (Çok geniş kota!)
-    "gemini-3.1-flash-lite", # 4. Öncelik: Günde 500 İSTEK (Geniş kota!)
-    "gemma-4-26b-a4b-it"     # 5. Öncelik: Günde 14.400 İSTEK (Sınırsıza yakın!)
+    "gemini-2.5-flash",
+    "gemini-2.5-flash-lite",
+    "gemini-1.5-flash",
+    "gemini-2.0-flash",
+    "gemini-flash-latest",
+    "gemini-flash-lite-latest"
 ]
 
-def evaluate_video_with_ai(title: str, text: str, author: str = "", platform: str = "reels") -> dict:
+def evaluate_video_with_ai(title: str, text: str, author: str = "", platform: str = "reels", metrics: dict = None, thumbnail_url: str = None) -> dict:
     """
-    Öncelikle Google Gemini API'nin en üst modelinden başlayarak (gemini-3.8 -> 3.6 -> 3.5-lite -> 3.1-lite -> gemma)
-    basamaklı kota devriyle videonun kalitesini ve virallik potansiyelini puanlar.
-    Eğer tüm AI kotaları aşılırsa kural tabanlı Agency Reality-Checker devreye girer.
+    Videonun kalitesini, virallik potansiyelini, Türkçe olup olmadığını ve reklam durumunu Gemini ile puanlar.
+    Varsa video kapak görselini (thumbnail) multimodal olarak modele verir.
     """
     cfg = get_ai_config()
     combined_text = f"{title} {text}".strip()
+    metrics = metrics or {}
 
-    # 1. Aşama: Hızlı Regex Anti-Spam Kontrolü
-    is_spam, spam_reason = detect_ad_or_spam(combined_text)
+    # 1. Aşama: Hızlı Kural Tabanlı Kesin Ret Kontrolü
+    is_spam, spam_reason = detect_ad_or_spam(combined_text, metrics)
     if is_spam:
         return {
             "is_approved": False,
@@ -135,44 +151,100 @@ def evaluate_video_with_ai(title: str, text: str, author: str = "", platform: st
             "source": "rule_filter"
         }
 
+    penalty = calculate_ad_penalty(combined_text)
+
+    # Metrikleri ve oranları hazırla
+    views = metrics.get("plays") or metrics.get("views") or 0
+    likes = metrics.get("likes") or 0
+    retweets = metrics.get("retweets") or 0
+    comments = metrics.get("replies") or 0
+    likes_per_view = f"{(likes / views * 100):.2f}%" if views > 0 else "Bilinmiyor"
+    comments_per_like = f"{(comments / likes * 100):.2f}%" if likes > 0 else "Bilinmiyor"
+
+    metrics_str = (
+        f"- İzlenme/Oynatma: {views:,}\n"
+        f"- Beğeni: {likes:,}\n"
+        f"- Yorum: {comments:,}\n"
+        f"- Retweet/Paylaşım: {retweets:,}\n"
+        f"- Beğeni/İzlenme Oranı: {likes_per_view}\n"
+        f"- Yorum/Beğeni Oranı: {comments_per_like}"
+    )
+
     prompt = (
         f"Sen sosyal medya ve kısa video uzmanısın (Agency Agents - Short Video Curator).\n"
         f"Platform: {platform}\n"
         f"Yazar: @{author}\n"
-        f"Video Açıklaması: \"{combined_text[:400]}\"\n\n"
-        f"Görevin: Bu videoyu Instagram Reels hesabında paylaşılmak üzere değerlendir.\n"
-        f"Kriterler:\n"
-        f"1. Reklam, ürün satışı, spam, bahis, dolandırıcılık veya saçma/kalitesiz içerik OLMAMALIDIR.\n"
-        f"2. Mizahi, düşündürücü, merak uyandırıcı, güncel veya eğlenceli kaliteli viral içerik olmalıdır.\n\n"
+        f"Video Açıklaması: \"{combined_text[:400] if combined_text else '(Açıklama metni yok / sadece video/emoji)'}\"\n\n"
+        f"Sayısal Performans Metrikleri:\n{metrics_str}\n\n"
+        f"Değerlendirme Kuralları:\n"
+        f"1. TÜRKÇE KONTROLÜ (is_turkish): Video metni, içeriği, esprisi veya hedef kitlesi Türkçe/Türkiye odaklı mı? "
+        f"Yabancı veya dili belirsiz içerikleri KESİNLİKLE reddet (is_turkish: false).\n"
+        f"2. REKLAM KONTROLÜ (is_ad): Gizli reklam, ürün pazarlama, bahis, spam veya yönlendirme var mı? Varsa is_ad: true yap.\n"
+        f"3. KALİTE VE VİRALLİK (score 1-10): İnsanların birbirine DM ile göndereceği, merak uyandıran, komik veya düşündürücü videolara 8-10 ver.\n"
+        f"4. Yalnızca is_turkish: true, is_ad: false ve score >= 7 olanları approved: true olarak onayla.\n\n"
         f"Yalnızca şu JSON formatında cevap ver:\n"
-        f'{{"approved": true/false, "score": 1-10, "reason": "kısa açıklama"}}'
+        f'{{"approved": true, "score": 8, "is_turkish": true, "is_ad": false, "reason": "kısa açıklama"}}'
     )
 
-    # 2. Aşama: Google Gemini API (Basamaklı Akıllı Model Zinciri)
+    # 2. Aşama: Google Gemini API (Multimodal Kapak Desteği ve Cascade)
     if cfg["gemini_key"]:
+        # Varsa kapak görselini (thumbnail) indirip base64 yap
+        thumbnail_part = None
+        if thumbnail_url:
+            try:
+                import base64
+                img_resp = requests.get(thumbnail_url, timeout=5)
+                if img_resp.status_code == 200 and len(img_resp.content) > 1000:
+                    b64_data = base64.b64encode(img_resp.content).decode("utf-8")
+                    mime = img_resp.headers.get("Content-Type", "image/jpeg").split(";")[0]
+                    thumbnail_part = {"inlineData": {"mimeType": mime, "data": b64_data}}
+            except Exception as e:
+                print(f"Video thumbnail indirme atlandı ({thumbnail_url[:40]}...): {e}")
+
+        parts = [{"text": prompt}]
+        if thumbnail_part:
+            parts.append(thumbnail_part)
+
         for model_name in GEMINI_MODELS_CASCADE:
             try:
                 gemini_url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent?key={cfg['gemini_key']}"
-                g_payload = {"contents": [{"parts": [{"text": prompt}]}]}
+                g_payload = {
+                    "contents": [{"parts": parts}],
+                    "generationConfig": {
+                        "responseMimeType": "application/json",
+                        "temperature": 0.2
+                    }
+                }
                 g_resp = requests.post(gemini_url, headers={"Content-Type": "application/json"}, json=g_payload, timeout=12)
                 if g_resp.status_code == 200:
                     raw_text = g_resp.json()["candidates"][0]["content"]["parts"][0]["text"].strip()
-                    json_match = re.search(r"\{.*\}", raw_text, re.DOTALL)
-                    if json_match:
-                        parsed = json.loads(json_match.group(0))
-                        return {
-                            "is_approved": bool(parsed.get("approved", True)),
-                            "quality_score": int(parsed.get("score", 7)),
-                            "reason": parsed.get("reason", f"Gemini AI ({model_name}) tarafından onaylandı"),
-                            "source": f"gemini_{model_name}"
-                        }
-                elif g_resp.status_code in (429, 503, 404):
-                    # Kota sınırı, yoğunluk veya erişilememe durumunda bir sonraki modele geç
+                    parsed = json.loads(raw_text)
+                    is_tr = bool(parsed.get("is_turkish", True))
+                    is_ad_found = bool(parsed.get("is_ad", False))
+                    raw_score = int(parsed.get("score", 7)) - penalty
+                    final_score = max(1, min(10, raw_score))
+                    approved = bool(parsed.get("approved", True)) and is_tr and not is_ad_found and final_score >= 7
+
+                    return {
+                        "is_approved": approved,
+                        "quality_score": final_score,
+                        "reason": parsed.get("reason", f"Gemini AI ({model_name}) analizi"),
+                        "source": f"gemini_{model_name}"
+                    }
+                else:
+                    print(f"⚠️ Gemini API [{model_name}] hata: HTTP {g_resp.status_code} - {g_resp.text[:120]}")
                     continue
-            except Exception:
+            except Exception as ex:
+                print(f"⚠️ Gemini API [{model_name}] bağlantı hatası: {ex}")
                 continue
 
-    # 3. Aşama: APMix / OpenAI Uyumlu API (İkinci Tercih)
+    # AI başarısız olursa sert filtre gereği kural tabanlı otomatik onay vermiyoruz
+    return {
+        "is_approved": False,
+        "quality_score": 0,
+        "reason": "AI modelleri yanıt vermedi veya içerik onaylanmadı. Kural tabanlı otomatik onay devre dışı.",
+        "source": "none"
+    }
     if cfg["ai_api_key"]:
         try:
             headers = {
@@ -260,11 +332,20 @@ def filter_and_rank_videos(video_list: list, platform: str = "reels") -> list:
     candidates_to_eval = pre_filtered[:5]
     for v in candidates_to_eval:
         text = v.get("caption") or v.get("text") or ""
+        thumb_url = v.get("video_thumbnail") or v.get("thumbnail_url") or v.get("image_url") or v.get("display_url")
+        metrics = {
+            "plays": v.get("plays", 0) or v.get("views", 0),
+            "likes": v.get("likes", 0),
+            "replies": v.get("replies", 0) or v.get("comment_count", 0),
+            "retweets": v.get("retweets", 0)
+        }
         ai_res = evaluate_video_with_ai(
             title="",
             text=text,
             author=v.get("username") or v.get("author") or "",
-            platform=platform
+            platform=platform,
+            metrics=metrics,
+            thumbnail_url=thumb_url
         )
         if not ai_res.get("is_approved"):
             continue
@@ -274,13 +355,9 @@ def filter_and_rank_videos(video_list: list, platform: str = "reels") -> list:
         v["curator_source"] = ai_res.get("source", "rules")
         approved.append(v)
 
-    # Eğer AI hepsi reddettiyse, temiz filtrelenmişlerin en popüler ilkini al
-    if not approved and pre_filtered:
-        fallback = pre_filtered[0]
-        fallback["curator_score"] = 6
-        fallback["curator_reason"] = "Yüksek etkileşimli temiz video."
-        fallback["curator_source"] = "heuristic_fallback"
-        approved.append(fallback)
+    # Sert filtre kuralı: Eğer AI tüm adayları reddettiyse, zorlama fallback yapma (boş dön)
+    if not approved:
+        return []
 
     # Son sıralama: Küratör kalite puanı ve etkileşim
     approved.sort(
