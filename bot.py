@@ -28,6 +28,7 @@ from reels_store import reels_store
 from reels_radar import find_top_new_viral_reel, download_video_bytes
 from twitter_video_radar import find_top_new_viral_twitter_video, download_twitter_video_bytes
 from history_store import history_store
+import photoroom_engine
 
 BOT_TOKEN = os.getenv("BOT_TOKEN", "").strip()
 
@@ -1617,14 +1618,141 @@ def run_reels_scheduler():
 
         time.sleep(30)
 
+def handle_dekupe_command(chat_id, msg_id, target_msg, opt_text="", message_thread_id=None):
+    """
+    PhotoRoom AI motoru ile arka planı temizler,
+    1500x2000 saf beyaz tuval üzerine orantılı yerleştirip
+    kayıpsız e-ticaret / Trendyol görseli olarak teslim eder.
+    """
+    file_id = None
+    orig_file_name = "urun.jpg"
+
+    if "photo" in target_msg:
+        file_id = target_msg["photo"][-1]["file_id"]
+        orig_file_name = "urun_1500x2000.jpg"
+    elif "document" in target_msg:
+        doc = target_msg["document"]
+        mime = doc.get("mime_type", "")
+        if mime.startswith("image/") or doc.get("file_name", "").lower().endswith((".png", ".jpg", ".jpeg", ".webp")):
+            file_id = doc["file_id"]
+            orig_file_name = doc.get("file_name", "urun_1500x2000.jpg")
+        else:
+            send_message(
+                chat_id,
+                "⚠️ Lütfen bir görsel dosyası (PNG, JPG, WEBP) seçin.",
+                reply_to_message_id=msg_id,
+                message_thread_id=message_thread_id
+            )
+            return
+
+    if not file_id:
+        send_message(
+            chat_id,
+            "⚠️ <b>Görsel bulunamadı!</b>\n\n"
+            "• Fotoğraf gönderirken açıklama kısmına <code>/d</code> yazın,\n"
+            "• Veya gruptaki bir fotoğrafa <code>/d</code> yazarak yanıt verin!",
+            reply_to_message_id=msg_id,
+            message_thread_id=message_thread_id
+        )
+        return
+
+    send_chat_action(chat_id, "upload_document", message_thread_id=message_thread_id)
+
+    try:
+        # Telegram'dan dosya yolunu al
+        get_file_resp = requests.get(f"{API_URL}/getFile?file_id={file_id}", timeout=15).json()
+        if not get_file_resp.get("ok"):
+            send_message(
+                chat_id,
+                "❌ Dosya Telegram sunucularından indirilemedi.",
+                reply_to_message_id=msg_id,
+                message_thread_id=message_thread_id
+            )
+            return
+
+        file_path = get_file_resp["result"]["file_path"]
+        download_url = f"{FILE_URL}/{file_path}"
+
+        # Görseli indir
+        img_data = requests.get(download_url, timeout=30).content
+
+        # PhotoRoom ile işle: 1500x2000 Beyaz Zemin + Şeffaf Cutout
+        white_jpg_io, cutout_png_io, orig_size, final_size = photoroom_engine.process_ecommerce_photo(
+            img_data, canvas_w=1500, canvas_h=2000
+        )
+
+        opt_lower = opt_text.lower()
+        send_png_only = "png" in opt_lower or "seffaf" in opt_lower or "şeffaf" in opt_lower
+        send_both = "hepsi" in opt_lower or "all" in opt_lower
+
+        base_name = os.path.splitext(orig_file_name)[0]
+        if not base_name.startswith("urun_"):
+            base_name = f"urun_{base_name}"
+
+        doc_payload = {
+            "chat_id": chat_id,
+            "parse_mode": "HTML",
+            "reply_to_message_id": msg_id
+        }
+        if message_thread_id:
+            doc_payload["message_thread_id"] = message_thread_id
+
+        # 1. Şeffaf PNG istenmişse veya her ikisi istenmişse
+        if send_png_only or send_both:
+            cutout_caption = (
+                "🔲 <b>Şeffaf Dekupe PNG Hazır!</b>\n"
+                f"🔍 <b>Orijinal:</b> {orig_size[0]}×{orig_size[1]} px\n"
+                "⚡ <b>Motor:</b> PhotoRoom AI Cutout\n"
+                "📁 <i>Arka planı tamamen temizlenmiş kayıpsız PNG</i>"
+            )
+            cutout_payload = dict(doc_payload)
+            cutout_payload["caption"] = cutout_caption
+            requests.post(
+                f"{API_URL}/sendDocument",
+                data=cutout_payload,
+                files={"document": (f"{base_name}_cutout.png", cutout_png_io.getvalue(), "image/png")},
+                timeout=30
+            )
+
+        # 2. Beyaz Zeminli 1500x2000 E-Ticaret JPEG (Varsayılan veya hepsi)
+        if not send_png_only:
+            white_caption = (
+                "🛍️ <b>Ürün Fotoğrafın Hazır!</b>\n"
+                f"📐 <b>Ölçü:</b> 1500 × 2000 px (Trendyol / E-Ticaret Formatı)\n"
+                "🎨 <b>Zemin:</b> Saf Beyaz (#FFFFFF) & Orantılı Merkezleme\n"
+                f"🔍 <b>Orijinal:</b> {orig_size[0]}×{orig_size[1]} ➔ 🎯 <b>Tuval:</b> {final_size[0]}×{final_size[1]}\n"
+                "⚡ <b>Motor:</b> PhotoRoom AI Motoru\n"
+                "📁 <i>Kayıpsız HD Belge (Doğrudan Mağazaya Yüklemeye Hazır)</i>\n"
+                "💡 <i>İpucu: Şeffaf PNG için <code>/d png</code>, her ikisi için <code>/d hepsi</code> yazabilirsiniz.</i>"
+            )
+            white_payload = dict(doc_payload)
+            white_payload["caption"] = white_caption
+            requests.post(
+                f"{API_URL}/sendDocument",
+                data=white_payload,
+                files={"document": (f"{base_name}_1500x2000.jpg", white_jpg_io.getvalue(), "image/jpeg")},
+                timeout=30
+            )
+
+    except Exception as e:
+        print(f"PhotoRoom Dekupe hatası: {e}")
+        send_message(
+            chat_id,
+            f"❌ Görsel işlenirken hata oluştu: {str(e)}",
+            reply_to_message_id=msg_id,
+            message_thread_id=message_thread_id
+        )
+
 def handle_update(update):
-    message = update.get("message")
+    message = update.get("message") or update.get("channel_post")
     if not message:
         return
 
     chat_id = message["chat"]["id"]
     msg_id = message["message_id"]
     thread_id = message.get("message_thread_id")
+    chat_type = message.get("chat", {}).get("type", "private")
+    is_group = chat_type in ("group", "supergroup", "channel")
 
     # Metin komutları
     if "text" in message:
@@ -1667,10 +1795,38 @@ def handle_update(update):
                 " • <code>/ekle &lt;link&gt; &lt;tuttu|tutmadi&gt; [izlenme]</code> - Botun atmadığı eski/harici postları kütüphaneye ekler.\n"
                 " • <code>/ornekler</code> - Altın kütüphanedeki başarılı postları listeler.\n"
                 " • <code>/sil #12</code> - Hatalı kaydı geçmişten siler.\n\n"
+                "🛍️ <b>PhotoRoom Dekupe & 1500×2000 Beyaz Zemin (/d):</b>\n"
+                " • Fotoğraf atarken açıklama kısmına <code>/d</code> yazın veya fotoğrafa <code>/d</code> ile yanıt verin;\n"
+                " • Arka planı stüdyo kalitesinde silip 1500×2000 saf beyaz tuvale yerleştirir.\n"
+                " • <code>/d png</code>: Şeffaf PNG | <code>/d hepsi</code>: Hem beyaz zemin hem şeffaf.\n\n"
                 "Hemen dene! 🚀"
             )
             send_message(chat_id, welcome, reply_to_message_id=msg_id, message_thread_id=thread_id)
             return
+
+        # /d veya /dekupe komutu: PhotoRoom arka plan silme + 1500x2000 beyaz tuval
+        if text.startswith("/d") or text.startswith("/dekupe"):
+            reply_msg = message.get("reply_to_message")
+            if reply_msg and ("photo" in reply_msg or "document" in reply_msg):
+                handle_dekupe_command(chat_id, msg_id, reply_msg, opt_text=text, message_thread_id=thread_id)
+                return
+            elif "photo" in message or "document" in message:
+                handle_dekupe_command(chat_id, msg_id, message, opt_text=text, message_thread_id=thread_id)
+                return
+            else:
+                send_message(
+                    chat_id,
+                    "🛍️ <b>PhotoRoom Dekupe & 1500×2000 Beyaz Zemin</b>\n\n"
+                    "• Fotoğraf gönderirken açıklama (caption) kısmına <code>/d</code> yazın,\n"
+                    "• Veya gruptaki bir fotoğrafa <code>/d</code> yazarak yanıt verin!\n\n"
+                    "💡 <b>Seçenekler:</b>\n"
+                    "• <code>/d</code> ➔ 1500×2000 Beyaz Zeminli HD JPEG (Trendyol / E-Ticaret)\n"
+                    "• <code>/d png</code> ➔ Şeffaf Arka Planlı Dekupe PNG\n"
+                    "• <code>/d hepsi</code> ➔ Hem Beyaz Zemin hem Şeffaf PNG",
+                    reply_to_message_id=msg_id,
+                    message_thread_id=thread_id
+                )
+                return
 
         # /radar_start: Bulunulan odayı viral hedefine bağlar ve radarı aktif eder
         if text.startswith("/radar_start"):
@@ -2194,6 +2350,16 @@ def handle_update(update):
         if re.search(r"https?://(?:twitter\.com|x\.com|fixupx\.com|vxtwitter\.com|fxtwitter\.com)/[a-zA-Z0-9_]+/status/\d+", text):
             handle_ig_command(chat_id, msg_id, text, include_comments=True, message_thread_id=thread_id)
             return
+
+    # Caption (açıklama) içinde /d veya /dekupe kontrolü
+    caption = (message.get("caption") or "").strip()
+    if caption.startswith("/d") or caption.startswith("/dekupe") or re.search(r'(^|\s)/d(\s|$)', caption):
+        handle_dekupe_command(chat_id, msg_id, message, opt_text=caption, message_thread_id=thread_id)
+        return
+
+    # Eğer grup veya kanaldaysa ve /d verilmediyse, gruptaki diğer botlarla çakışmamak için fotoğrafı işleme
+    if is_group:
+        return
 
     file_id = None
     file_name = "instagram_post.png"
