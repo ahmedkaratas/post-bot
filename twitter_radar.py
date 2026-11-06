@@ -13,6 +13,7 @@ import threading
 import subprocess
 from datetime import datetime, timedelta, timezone
 from radar_store import radar_store
+from session_manager import session_manager
 
 PROJECT_DIR = os.path.dirname(os.path.abspath(__file__))
 SCRAPER_JS = os.path.join(PROJECT_DIR, "shots", "tweet-shot", "tools", "x-search.js")
@@ -25,10 +26,8 @@ _last_search_cache = {
 }
 
 def load_twitter_credentials():
-    """Twitter oturum çerezlerini yalnızca Coolify/container environment değişkenlerinden okur."""
-    auth_token = os.getenv("TWITTER_AUTH_TOKEN", "").strip()
-    ct0 = os.getenv("TWITTER_CT0", "").strip()
-    return auth_token, ct0
+    """Twitter oturum çerezlerini önce data/cookies.json'dan, yoksa ortam değişkenlerinden okur."""
+    return session_manager.get_twitter_credentials()
 
 def get_dynamic_since_date(days_back=3):
     """Bugünün tarihinden geriye dönük dinamik since:YYYY-MM-DD oluşturur."""

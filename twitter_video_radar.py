@@ -75,7 +75,7 @@ def search_viral_video_tweets(min_faves=3000, days_back=3):
 
     try:
         res = subprocess.run(
-            ["node", SCRAPER_JS, query],
+            ["node", SCRAPER_JS, query, auth_token, ct0],
             capture_output=True,
             text=True,
             timeout=75

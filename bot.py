@@ -28,6 +28,7 @@ from reels_store import reels_store
 from reels_radar import find_top_new_viral_reel, download_video_bytes
 from twitter_video_radar import find_top_new_viral_twitter_video, download_twitter_video_bytes
 from history_store import history_store
+from session_manager import session_manager
 import photoroom_engine
 
 BOT_TOKEN = os.getenv("BOT_TOKEN", "").strip()
@@ -1799,9 +1800,116 @@ def handle_update(update):
                 " • Fotoğraf atarken açıklama kısmına <code>/d</code> yazın veya fotoğrafa <code>/d</code> ile yanıt verin;\n"
                 " • Arka planı stüdyo kalitesinde silip 1500×2000 saf beyaz tuvale yerleştirir.\n"
                 " • <code>/d png</code>: Şeffaf PNG | <code>/d hepsi</code>: Hem beyaz zemin hem şeffaf.\n\n"
+                "🔐 <b>Canlı Oturum & Çerez Yönetimi (DM):</b>\n"
+                " • <code>/session_status</code> - Instagram ve Twitter oturum durumunu gösterir.\n"
+                " • <code>/set_ig &lt;sessionid&gt;</code> - Instagram çerezini canlı günceller (mesaj otomatik silinir).\n"
+                " • <code>/set_x &lt;auth_token&gt; &lt;ct0&gt;</code> - Twitter çerezlerini canlı günceller.\n\n"
                 "Hemen dene! 🚀"
             )
             send_message(chat_id, welcome, reply_to_message_id=msg_id, message_thread_id=thread_id)
+            return
+
+        # /set_ig: Instagram sessionid çerezini canlı günceller (Coolify deploy gerektirmez)
+        if text.startswith("/set_ig"):
+            if is_group:
+                delete_message(chat_id, msg_id)
+                send_message(
+                    chat_id,
+                    "⚠️ <b>Güvenlik Uyarısı:</b> Oturum çerezlerini lütfen gruplarda paylaşmayın! Bu komutu bota <b>özel mesaj (DM)</b> olarak gönderin.",
+                    message_thread_id=thread_id
+                )
+                return
+
+            parts = text.split(maxsplit=1)
+            if len(parts) > 1 and parts[1].strip():
+                new_session = parts[1].strip()
+                ok = session_manager.set_instagram_session_id(new_session)
+                delete_message(chat_id, msg_id)
+                if ok:
+                    send_message(
+                        chat_id,
+                        "✅ <b>Instagram Oturumu Başarıyla Güncellendi!</b>\n\n"
+                        f"• <b>Durum:</b> 🟢 Aktif\n"
+                        f"• <b>Kayıt:</b> Kalıcı Depolama (<code>data/cookies.json</code>)\n"
+                        "• <b>Etki:</b> Anında devrede (Coolify yeniden dağıtımına gerek yoktur).\n\n"
+                        "🛡️ <i>Güvenliğiniz için çerezi içeren mesajınız sohbetten silinmiştir.</i>",
+                        message_thread_id=thread_id
+                    )
+                else:
+                    send_message(chat_id, "❌ Çerez kaydedilemedi.", message_thread_id=thread_id)
+            else:
+                send_message(
+                    chat_id,
+                    "⚠️ <b>Kullanım:</b>\n<code>/set_ig &lt;instagram_sessionid&gt;</code>\n\n"
+                    "Örnek:\n<code>/set_ig 123456789%3Aabcdef...</code>",
+                    reply_to_message_id=msg_id,
+                    message_thread_id=thread_id
+                )
+            return
+
+        # /set_x: Twitter/X auth_token ve ct0 çerezlerini canlı günceller
+        if text.startswith("/set_x"):
+            if is_group:
+                delete_message(chat_id, msg_id)
+                send_message(
+                    chat_id,
+                    "⚠️ <b>Güvenlik Uyarısı:</b> Oturum çerezlerini lütfen gruplarda paylaşmayın! Bu komutu bota <b>özel mesaj (DM)</b> olarak gönderin.",
+                    message_thread_id=thread_id
+                )
+                return
+
+            parts = text.split()
+            if len(parts) >= 3:
+                auth_token = parts[1].strip()
+                ct0 = parts[2].strip()
+                ok = session_manager.set_twitter_credentials(auth_token, ct0)
+                delete_message(chat_id, msg_id)
+                if ok:
+                    send_message(
+                        chat_id,
+                        "✅ <b>Twitter/X Oturumu Başarıyla Güncellendi!</b>\n\n"
+                        f"• <b>auth_token:</b> 🟢 Kaydedildi\n"
+                        f"• <b>ct0:</b> 🟢 Kaydedildi\n"
+                        f"• <b>Kayıt:</b> Kalıcı Depolama (<code>data/cookies.json</code>)\n"
+                        "• <b>Etki:</b> Anında devrede (Coolify yeniden dağıtımına gerek yoktur).\n\n"
+                        "🛡️ <i>Güvenliğiniz için çerezleri içeren mesajınız sohbetten silinmiştir.</i>",
+                        message_thread_id=thread_id
+                    )
+                else:
+                    send_message(chat_id, "❌ Çerezler kaydedilemedi.", message_thread_id=thread_id)
+            else:
+                send_message(
+                    chat_id,
+                    "⚠️ <b>Kullanım:</b>\n<code>/set_x &lt;auth_token&gt; &lt;ct0&gt;</code>\n\n"
+                    "Örnek:\n<code>/set_x 28a1c9... 8ef120...</code>",
+                    reply_to_message_id=msg_id,
+                    message_thread_id=thread_id
+                )
+            return
+
+        # /session_status veya /oturum: Aktif çerez durumunu gösterir
+        if text.startswith("/session_status") or text.startswith("/oturum"):
+            status = session_manager.get_status()
+            ig = status["instagram"]
+            tw = status["twitter"]
+
+            ig_status = f"🟢 Aktif (Maskeli: <code>{ig['masked']}</code>)" if ig["active"] else "🔴 Tanımsız / Süresi Dolmuş"
+            tw_status = f"🟢 Aktif (auth: <code>{tw['auth_token_masked']}</code>, ct0: <code>{tw['ct0_masked']}</code>)" if tw["active"] else "🔴 Tanımsız / Eksik"
+
+            msg_txt = (
+                "🔐 <b>Canlı Oturum & Çerez Durumu</b>\n\n"
+                f"📸 <b>Instagram Reels:</b>\n"
+                f"• Durum: {ig_status}\n"
+                f"• Kaynak: {ig['source']}\n\n"
+                f"🐦 <b>Twitter/X Scraper:</b>\n"
+                f"• Durum: {tw_status}\n"
+                f"• Kaynak: {tw['source']}\n\n"
+                "💡 <b>Canlı Güncellemek İçin (Bota Özelden / DM):</b>\n"
+                "• <code>/set_ig &lt;sessionid&gt;</code>\n"
+                "• <code>/set_x &lt;auth_token&gt; &lt;ct0&gt;</code>\n\n"
+                "<i>Not: Güncellemeler Coolify veya GitHub gerektirmeden anında aktif olur.</i>"
+            )
+            send_message(chat_id, msg_txt, reply_to_message_id=msg_id, message_thread_id=thread_id)
             return
 
         # /d veya /dekupe komutu: PhotoRoom arka plan silme + 1500x2000 beyaz tuval

@@ -9,12 +9,13 @@ import time
 import requests
 from reels_store import reels_store
 from video_curator_agent import filter_and_rank_videos, is_vertical_reels_format, detect_ad_or_spam
+from session_manager import session_manager
 
 PROJECT_DIR = os.path.dirname(os.path.abspath(__file__))
 
 def load_instagram_session_id():
-    """Instagram sessionid değerini yalnızca Coolify/container environment değişkeninden okur."""
-    return os.getenv("INSTAGRAM_SESSION_ID", "").strip()
+    """Instagram sessionid değerini önce data/cookies.json'dan, yoksa ortam değişkeninden okur."""
+    return session_manager.get_instagram_session_id()
 
 def fetch_reels_feed(session_id: str, count: int = 25):
     """
