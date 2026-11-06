@@ -11,6 +11,7 @@ import re
 import json
 import requests
 from video_curator_agent import get_ai_config, GEMINI_MODELS_CASCADE, detect_ad_or_spam, calculate_ad_penalty
+from history_store import history_store
 
 def evaluate_tweet_for_instagram(tweet_dict: dict) -> dict:
     """
@@ -61,17 +62,22 @@ def evaluate_tweet_for_instagram(tweet_dict: dict) -> dict:
         f"- Yorum/Beğeni Oranı: {replies_per_like}"
     )
 
+    # Aşama 3: Altın kütüphaneden Few-Shot öğrenme örneklerini çek
+    few_shot_section = history_store.format_few_shot_prompt_section(source_type="tweet")
+
     prompt = (
         f"Sen bir Instagram içerik stratejistisin (Agency Agents - Trend Researcher).\n"
         f"Aşağıdaki tweeti Instagram'da 1080x1350 kaydırmalı post olarak paylaşmak üzere değerlendir:\n"
         f"Yazar: @{author}\n"
         f"Tweet Metni: \"{text[:400]}\"\n\n"
-        f"Performans ve Etkileşim Metrikleri:\n{metrics_str}\n\n"
+        f"Performans ve Etkileşim Metrikleri:\n{metrics_str}\n"
+        f"{few_shot_section}\n\n"
         f"Kriterler:\n"
         f"1. TÜRKÇE KONTROLÜ (is_turkish): Tweet Türkçe veya Türkiye odaklı kültürel mizah/durum tespiti mi? Yabancı ise kesinlikle false yap.\n"
         f"2. REKLAM KONTROLÜ (is_ad): Gizli reklam, link satışı, ürün veya sinyal pazarlaması var mı? Varsa is_ad: true yap.\n"
         f"3. VİRALLİK & MİZAH (score 1-10): Arkadaşa DM atılacak, güldüren veya tartışma yaratan zekice tweetlere 8-10 ver.\n"
-        f"4. Yalnızca is_turkish: true, is_ad: false ve score >= 7 olanları approved: true olarak onayla.\n\n"
+        f"4. REFERANS ÖĞRENİMİ: Yukarıda verilen 'BU HESAPTA TUTAN VE TUTMAYAN GERÇEK POSTLAR' referanslarını incele. Yeni aday bu hesapta TUTAN postların tarzına/mizahına/dinamiğine benziyorsa puanını artır, TUTMAYAN postların hatalarını taşıyorsa puanını kır.\n"
+        f"5. Yalnızca is_turkish: true, is_ad: false ve score >= 7 olanları approved: true olarak onayla.\n\n"
         f"Yalnızca şu JSON formatında cevap ver:\n"
         f'{{"approved": true, "score": 8, "is_turkish": true, "is_ad": false, "reason": "kısa açıklama"}}'
     )

@@ -170,18 +170,28 @@ def evaluate_video_with_ai(title: str, text: str, author: str = "", platform: st
         f"- Yorum/Beğeni Oranı: {comments_per_like}"
     )
 
+    # Aşama 3: Altın kütüphaneden Few-Shot video öğrenme örneklerini çek
+    few_shot_section = ""
+    try:
+        from history_store import history_store
+        few_shot_section = history_store.format_few_shot_prompt_section(source_type="video")
+    except Exception:
+        pass
+
     prompt = (
         f"Sen sosyal medya ve kısa video uzmanısın (Agency Agents - Short Video Curator).\n"
         f"Platform: {platform}\n"
         f"Yazar: @{author}\n"
         f"Video Açıklaması: \"{combined_text[:400] if combined_text else '(Açıklama metni yok / sadece video/emoji)'}\"\n\n"
-        f"Sayısal Performans Metrikleri:\n{metrics_str}\n\n"
+        f"Sayısal Performans Metrikleri:\n{metrics_str}\n"
+        f"{few_shot_section}\n\n"
         f"Değerlendirme Kuralları:\n"
         f"1. TÜRKÇE KONTROLÜ (is_turkish): Video metni, içeriği, esprisi veya hedef kitlesi Türkçe/Türkiye odaklı mı? "
         f"Yabancı veya dili belirsiz içerikleri KESİNLİKLE reddet (is_turkish: false).\n"
         f"2. REKLAM KONTROLÜ (is_ad): Gizli reklam, ürün pazarlama, bahis, spam veya yönlendirme var mı? Varsa is_ad: true yap.\n"
         f"3. KALİTE VE VİRALLİK (score 1-10): İnsanların birbirine DM ile göndereceği, merak uyandıran, komik veya düşündürücü videolara 8-10 ver.\n"
-        f"4. Yalnızca is_turkish: true, is_ad: false ve score >= 7 olanları approved: true olarak onayla.\n\n"
+        f"4. REFERANS ÖĞRENİMİ: Yukarıda verilen gerçek tutan/tutmayan video örneklerini dikkate alarak benzer dinamikleri ödüllendir veya cezalandır.\n"
+        f"5. Yalnızca is_turkish: true, is_ad: false ve score >= 7 olanları approved: true olarak onayla.\n\n"
         f"Yalnızca şu JSON formatında cevap ver:\n"
         f'{{"approved": true, "score": 8, "is_turkish": true, "is_ad": false, "reason": "kısa açıklama"}}'
     )

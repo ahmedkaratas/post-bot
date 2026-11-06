@@ -180,6 +180,114 @@ class HistoryStore:
             self._save()
             return True
 
+    def set_why_note(self, post_id: int, note: str) -> bool:
+        """Postun 'neden tuttu/tutmadı' analiz notunu kaydeder."""
+        if not note:
+            return False
+        with self._lock:
+            self.data = self._load()
+            posts = self.data.get("posts", {})
+            key = str(post_id)
+            if key not in posts:
+                return False
+            post = posts[key]
+            clean_note = str(note).strip()
+            post["why_note"] = clean_note
+            post.setdefault("results", {})["why_note"] = clean_note
+            self._save()
+            return True
+
+    def get_few_shot_examples(self, source_type: str = None, limit_tuttu: int = 6, limit_tutmadi: int = 6) -> dict:
+        """
+        Kütüphaneden en iyi 'tuttu' ve 'tutmadi' örneklerini çeker.
+        Varsa aynı türden (tweet/video) olanlara öncelik verir.
+        """
+        with self._lock:
+            self.data = self._load()
+            all_posts = list(self.data.get("posts", {}).values())
+
+        def match_score(p, target_type):
+            p_type = p.get("source_type", "")
+            if not target_type:
+                return 1
+            if "tweet" in target_type and "tweet" in p_type:
+                return 2
+            if ("video" in target_type or "reel" in target_type) and ("video" in p_type or "reel" in p_type):
+                return 2
+            return 1
+
+        tuttu_posts = [p for p in all_posts if p.get("results", {}).get("tag") == "tuttu"]
+        tutmadi_posts = [p for p in all_posts if p.get("results", {}).get("tag") == "tutmadi"]
+
+        # Hedef türe göre önceliklendir ve en son tarihli/yüksek izlenmelileri sırala
+        tuttu_posts.sort(key=lambda p: (match_score(p, source_type), p.get("results", {}).get("views") or 0, p.get("id", 0)), reverse=True)
+        tutmadi_posts.sort(key=lambda p: (match_score(p, source_type), p.get("id", 0)), reverse=True)
+
+        return {
+            "tuttu": tuttu_posts[:limit_tuttu],
+            "tutmadi": tutmadi_posts[:limit_tutmadi]
+        }
+
+    def format_few_shot_prompt_section(self, source_type: str = None) -> str:
+        """
+        Gemini AI modelleri için kütüphanedeki gerçek tutan/tutmayan örnekleri Few-Shot formatında hazırlar.
+        """
+        examples = self.get_few_shot_examples(source_type=source_type, limit_tuttu=6, limit_tutmadi=6)
+        tuttu = examples.get("tuttu", [])
+        tutmadi = examples.get("tutmadi", [])
+
+        if not tuttu and not tutmadi:
+            return ""
+
+        lines = [
+            "\n### BU INSTAGRAM HESABINDA DAHA ÖNCE PAYLAŞILMIŞ GERÇEK ÖRNEKLER (ALTIN REFERANS):",
+            "Aşağıdaki içerikler bu hesapta yayınlandı ve kitle tepkisine göre etiketlendi.",
+            "Yeni adayı değerlendirirken bu hesapta nelerin TUTTUĞUNU (ödüllendir) ve nelerin TUTMADIĞINI (cezalandır) baz al:\n"
+        ]
+
+        if tuttu:
+            lines.append("✅ BU HESAPTA TUTAN (YÜKSEK ETKİLEŞİM ALAN) ÖRNEKLER:")
+            for idx, p in enumerate(tuttu, start=1):
+                p_text = (p.get("text", "") or p.get("caption", "")).replace("\n", " ").strip()
+                p_text_short = (p_text[:180] + "...") if len(p_text) > 180 else p_text
+                author = p.get("author", "yazar")
+                p_type = p.get("source_type", "icerik")
+                res = p.get("results", {})
+                v = res.get("views")
+                v_str = f" | IG İzlenme: {v:,}" if v else ""
+                sh = res.get("shares")
+                sh_str = f" | Paylaşım: {sh:,}" if sh else ""
+                sv = res.get("saves")
+                sv_str = f" | Kaydetme: {sv:,}" if sv else ""
+                m = p.get("metrics", {})
+                likes = m.get("likes") or m.get("favorite_count")
+                l_str = f"Beğeni: {likes:,}" if likes else ""
+                metrics_summary = f"{l_str}{v_str}{sh_str}{sv_str}".strip(" |")
+
+                note = p.get("why_note") or p.get("ai_reason") or "Yüksek etkileşim ve paylaşım."
+                lines.append(f"{idx}. [{p_type.upper()} - @{author}]: \"{p_text_short}\"")
+                if metrics_summary:
+                    lines.append(f"   Metrikler: {metrics_summary}")
+                lines.append(f"   💡 Neden Tuttu: {note}\n")
+
+        if tutmadi:
+            lines.append("❌ BU HESAPTA TUTMAYAN (DÜŞÜK ETKİLEŞİM ALAN) ÖRNEKLER:")
+            for idx, p in enumerate(tutmadi, start=1):
+                p_text = (p.get("text", "") or p.get("caption", "")).replace("\n", " ").strip()
+                p_text_short = (p_text[:180] + "...") if len(p_text) > 180 else p_text
+                author = p.get("author", "yazar")
+                p_type = p.get("source_type", "icerik")
+                res = p.get("results", {})
+                v = res.get("views")
+                v_str = f" | IG İzlenme: {v:,}" if v else ""
+                note = p.get("why_note") or "Düşük kitle rezonansı, yayılma sağlayamadı."
+                lines.append(f"{idx}. [{p_type.upper()} - @{author}]: \"{p_text_short}\"")
+                if v_str:
+                    lines.append(f"   Metrikler: {v_str.strip(' |')}")
+                lines.append(f"   ⚠️ Neden Tutmadı: {note}\n")
+
+        return "\n".join(lines)
+
     def delete_post(self, post_id: int) -> bool:
         """Belirtilen postu geçmişten ve kütüphaneden siler."""
         with self._lock:

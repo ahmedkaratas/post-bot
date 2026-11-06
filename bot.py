@@ -31,6 +31,7 @@ from history_store import history_store
 from session_manager import session_manager
 from dedup_engine import dedup_engine
 import photoroom_engine
+import history_curator
 
 BOT_TOKEN = os.getenv("BOT_TOKEN", "").strip()
 
@@ -1814,7 +1815,8 @@ def handle_update(update):
                 " • <code>/tutmadi #12</code> - Postu Instagram'da 'TUTMADI' (başarısız) olarak etiketler.\n"
                 " • <code>/sonuc #12 &lt;izlenme&gt; [paylaşım] [kaydetme]</code> - Gerçek Instagram sonuçlarını kaydeder (10 veri sonrası en üst %25 otomatik 'TUTTU' sayılır).\n"
                 " • <code>/ekle &lt;link&gt; &lt;tuttu|tutmadi&gt; [izlenme]</code> - Botun atmadığı eski/harici postları kütüphaneye ekler.\n"
-                " • <code>/ornekler</code> - Altın kütüphanedeki başarılı postları listeler.\n"
+                " • <code>/ornekler</code> - Altın kütüphanedeki örnekleri ve yapay zeka analiz notlarını listeler.\n"
+                " • <code>/not #12 &lt;not&gt;</code> - Postun neden tuttu/tutmadığına dair analiz notunu manuel düzenler.\n"
                 " • <code>/sil #12</code> - Hatalı kaydı geçmişten siler.\n\n"
                 "🛍️ <b>PhotoRoom Dekupe & 1500×2000 Beyaz Zemin (/d):</b>\n"
                 " • Fotoğraf atarken açıklama kısmına <code>/d</code> yazın veya fotoğrafa <code>/d</code> ile yanıt verin;\n"
@@ -2279,9 +2281,14 @@ def handle_update(update):
                 if pid:
                     ok = history_store.set_tag(pid, "tuttu", tagged_by="manual")
                     if ok:
+                        # Aşama 3: Gemini ile 'Neden Tuttu' analizi üret
+                        history_curator.generate_why_note_async(pid)
                         send_message(
                             chat_id,
-                            f"✅ <b>Post #{pid} 'TUTTU' olarak etiketlendi!</b>\nİçerik altın kütüphaneye dahil edildi ve gelecekteki seçimlerde başarılı örnek olarak sunulacak.",
+                            f"✅ <b>Post #{pid} 'TUTTU' olarak etiketlendi!</b>\n\n"
+                            "💡 <i>Yapay zeka başarı analizi kütüphaneye işleniyor...</i>\n"
+                            "İçerik altın kütüphaneye dahil edildi ve gelecekteki seçimlerde başarılı referans (Few-Shot) olarak sunulacak.\n\n"
+                            "ℹ️ <i>Kütüphaneyi ve analizleri görmek için:</i> <code>/ornekler</code>",
                             reply_to_message_id=msg_id,
                             message_thread_id=thread_id
                         )
@@ -2300,9 +2307,14 @@ def handle_update(update):
                 if pid:
                     ok = history_store.set_tag(pid, "tutmadi", tagged_by="manual")
                     if ok:
+                        # Aşama 3: Gemini ile 'Neden Tutmadı' analizi üret
+                        history_curator.generate_why_note_async(pid)
                         send_message(
                             chat_id,
-                            f"❌ <b>Post #{pid} 'TUTMADI' olarak etiketlendi.</b>\nBu tarz içerikler gelecekteki seçimlerde filtrelenecektir.",
+                            f"❌ <b>Post #{pid} 'TUTMADI' olarak etiketlendi.</b>\n\n"
+                            "💡 <i>Yapay zeka neden tutmadığını analiz edip kütüphaneye işliyor...</i>\n"
+                            "Bu içerik gelecekteki yapay zeka seçimlerinde kaçınılması gereken negatif referans olarak kullanılacaktır.\n\n"
+                            "ℹ️ <i>Kütüphaneyi ve analizleri görmek için:</i> <code>/ornekler</code>",
                             reply_to_message_id=msg_id,
                             message_thread_id=thread_id
                         )
@@ -2338,6 +2350,10 @@ def handle_update(update):
                         tag = res.get("tag")
                         tagged_by = res.get("tagged_by")
 
+                        # Aşama 3: Etiket oluştuktan sonra analiz notunu tetikle
+                        if tag in ["tuttu", "tutmadi"]:
+                            history_curator.generate_why_note_async(pid)
+
                         status_line = ""
                         if tag == "tuttu":
                             status_line = "🟢 <b>TUTTU</b>" + (" (Dinamik En Üst %25)" if tagged_by == "auto" else " (Manuel)")
@@ -2355,7 +2371,8 @@ def handle_update(update):
                             + (f"• 🔖 <b>Kaydetme:</b> {saves:,}\n" if saves is not None else "")
                             + (f"• ❤️ <b>Beğeni:</b> {likes:,}\n" if likes is not None else "")
                             + (f"• 💬 <b>Yorum:</b> {comments:,}\n" if comments is not None else "")
-                            + f"\n🏷️ <b>Durum:</b> {status_line}"
+                            + f"\n🏷️ <b>Durum:</b> {status_line}\n"
+                            "💡 <i>Yapay zeka analiz notu kütüphaneye işleniyor (/ornekler).</i>"
                         )
                         send_message(chat_id, summary_txt, reply_to_message_id=msg_id, message_thread_id=thread_id)
                         return
@@ -2398,6 +2415,9 @@ def handle_update(update):
                         author=author
                     )
 
+                    # Aşama 3: Gemini ile 'Neden Tuttu/Tutmadı' analizi üret
+                    history_curator.generate_why_note_async(pid)
+
                     tag_emoji = "🟢 TUTTU" if tag == "tuttu" else "🔴 TUTMADI"
                     stat_info = f"\n• 👁️ İzlenme: {views:,}" if views else ""
 
@@ -2408,7 +2428,7 @@ def handle_update(update):
                         f"• <b>Yazar:</b> @{author}\n"
                         f"• <b>Link:</b> {link}"
                         f"{stat_info}\n\n"
-                        "<i>Kütüphaneye işlendi, yapay zeka öğrenme verisi olarak kullanılacaktır.</i>",
+                        "💡 <i>Kütüphaneye işlendi; yapay zeka başarı analizi üretilip öğrenme veritabanına eklendi.</i>",
                         reply_to_message_id=msg_id,
                         message_thread_id=thread_id
                     )
@@ -2422,17 +2442,19 @@ def handle_update(update):
             )
             return
 
-        # /ornekler: Altın kütüphanedeki 'TUTTU' postlarını özetler
+        # /ornekler: Altın kütüphanedeki 'TUTTU' ve 'TUTMADI' postlarını ve Gemini analizlerini listeler
         if text.startswith("/ornekler"):
             stats = history_store.get_stats_summary()
             tagged_tuttu = history_store.get_tagged_posts("tuttu")
+            tagged_tutmadi = history_store.get_tagged_posts("tutmadi")
 
-            if not tagged_tuttu:
+            if not tagged_tuttu and not tagged_tutmadi:
                 send_message(
                     chat_id,
-                    "🏆 <b>Altın Kütüphane (TUTTU Havuzu) Boş</b>\n\n"
-                    "Henüz başarılı olarak etiketlenmiş bir post bulunmuyor.\n"
-                    "• Gönderilen postları etiketlemek için: <code>/tuttu #12</code> veya <code>/sonuc #12 150k</code>\n"
+                    "🏆 <b>Altın Kütüphane Boş</b>\n\n"
+                    "Henüz etiketlenmiş bir post bulunmuyor.\n"
+                    "• Gönderilen postları etiketlemek için: <code>/tuttu #12</code> veya <code>/tutmadi #12</code>\n"
+                    "• Sonuç girmek için: <code>/sonuc #12 150k 1200 450</code>\n"
                     "• Eski başarılı postları eklemek için: <code>/ekle &lt;link&gt; tuttu [izlenme]</code>",
                     reply_to_message_id=msg_id,
                     message_thread_id=thread_id
@@ -2440,27 +2462,79 @@ def handle_update(update):
                 return
 
             lines = [
-                "🏆 <b>Altın Kütüphane — Başarılı 'TUTTU' Postları</b>\n",
-                f"• <b>Toplam Başarılı Post:</b> {stats['tuttu_count']} adet",
+                "🏆 <b>Altın Kütüphane & Yapay Zeka Öğrenme Veritabanı</b>\n",
+                f"• <b>Tutan Postlar (TUTTU):</b> {stats['tuttu_count']} adet",
+                f"• <b>Tutmayan Postlar (TUTMADI):</b> {stats['tutmadi_count']} adet"
             ]
             if stats['avg_views'] > 0:
                 lines.append(f"• <b>Ortalama İzlenme:</b> {stats['avg_views']:,}")
             if stats["is_dynamic_active"] and stats["threshold_75"]:
-                lines.append(f"• <b>En İyi %25 Eşiği:</b> {stats['threshold_75']:,} izlenme (Dinamik)")
+                lines.append(f"• <b>Dinamik Üst %25 Eşiği:</b> {stats['threshold_75']:,} izlenme")
             lines.append("")
 
-            for p in tagged_tuttu[:10]:
-                pid = p.get("id")
-                author = p.get("author", "bilinmiyor")
-                res = p.get("results", {})
-                v = res.get("views")
-                v_str = f" ({v:,} izlenme)" if v else ""
-                reason = p.get("ai_reason") or p.get("text", "")
-                reason_short = (reason[:60] + "...") if len(reason) > 60 else reason
+            if tagged_tuttu:
+                lines.append("✅ <b>Öne Çıkan TUTTU Örnekleri:</b>")
+                for p in tagged_tuttu[:6]:
+                    pid = p.get("id")
+                    author = p.get("author", "bilinmiyor")
+                    res = p.get("results", {})
+                    v = res.get("views")
+                    v_str = f" ({v:,} izlenme)" if v else ""
+                    text_raw = (p.get("text", "") or p.get("caption", "")).replace("\n", " ")
+                    text_short = (text_raw[:70] + "...") if len(text_raw) > 70 else text_raw
+                    why = p.get("why_note") or p.get("ai_reason") or "Yüksek etkileşim ve DM paylaşımı."
 
-                lines.append(f"• <b>#{pid}</b> @{author}{v_str}\n  <i>{escape(reason_short)}</i>\n  🔗 {p.get('link')}")
+                    lines.append(f"• <b>#{pid}</b> @{author}{v_str}\n  💬 <i>\"{escape(text_short)}\"</i>\n  💡 <b>Neden:</b> {escape(why)}")
+                lines.append("")
+
+            if tagged_tutmadi:
+                lines.append("❌ <b>Öne Çıkan TUTMADI Örnekleri:</b>")
+                for p in tagged_tutmadi[:4]:
+                    pid = p.get("id")
+                    author = p.get("author", "bilinmiyor")
+                    res = p.get("results", {})
+                    v = res.get("views")
+                    v_str = f" ({v:,} izlenme)" if v else ""
+                    text_raw = (p.get("text", "") or p.get("caption", "")).replace("\n", " ")
+                    text_short = (text_raw[:70] + "...") if len(text_raw) > 70 else text_raw
+                    why = p.get("why_note") or "Düşük kitle rezonansı, yayılma sağlayamadı."
+
+                    lines.append(f"• <b>#{pid}</b> @{author}{v_str}\n  💬 <i>\"{escape(text_short)}\"</i>\n  ⚠️ <b>Neden:</b> {escape(why)}")
+                lines.append("")
+
+            lines.append("✏️ <i>Bir postun analiz notunu düzenlemek için:</i>\n<code>/not #<no> <kendi açıklamanız></code>")
 
             send_message(chat_id, "\n".join(lines), reply_to_message_id=msg_id, message_thread_id=thread_id)
+            return
+
+        # /not veya /not_duzelt: Postun neden tuttu/tutmadı analiz notunu günceller
+        if text.startswith("/not") or text.startswith("/not_duzelt"):
+            parts = text.split(maxsplit=2)
+            if len(parts) >= 3:
+                pid = parse_post_id(parts[1])
+                new_note = parts[2].strip()
+                if pid and new_note:
+                    ok = history_store.set_why_note(pid, new_note)
+                    if ok:
+                        send_message(
+                            chat_id,
+                            f"✅ <b>Post #{pid} Analiz Notu Güncellendi!</b>\n\n"
+                            f"💡 <b>Yeni Not:</b> <i>{escape(new_note)}</i>\n\n"
+                            "Bu not altın kütüphaneye kaydedildi ve yapay zeka puanlamalarında referans olarak kullanılacaktır.",
+                            reply_to_message_id=msg_id,
+                            message_thread_id=thread_id
+                        )
+                        return
+                    else:
+                        send_message(chat_id, f"❌ Post #{pid} geçmişte bulunamadı.", reply_to_message_id=msg_id, message_thread_id=thread_id)
+                        return
+            send_message(
+                chat_id,
+                "⚠️ <b>Kullanım:</b> <code>/not #&lt;no&gt; &lt;analiz notunuz&gt;</code>\n"
+                "Örnek: <code>/not #4 Gündelik ilişki mizahı ve yüksek DM paylaşımı sayesinde tuttu.</code>",
+                reply_to_message_id=msg_id,
+                message_thread_id=thread_id
+            )
             return
 
         # /sil: Hatalı postu geçmişten ve kütüphaneden siler
