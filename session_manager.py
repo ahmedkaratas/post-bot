@@ -13,6 +13,21 @@ import threading
 DATA_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
 COOKIES_FILE = os.path.join(DATA_DIR, "cookies.json")
 
+def _clean_cookie_val(val: str, prefix: str = "") -> str:
+    """Çerez değerinden tırnakları, noktalı virgülleri ve 'sessionid=' gibi ön ekleri temizler."""
+    if not val:
+        return ""
+    val = str(val).strip().strip('"\'').strip(';')
+    if prefix:
+        if val.startswith(f"{prefix}="):
+            val = val[len(prefix) + 1:].strip().strip('"\'').strip(';')
+        elif f"{prefix}=" in val:
+            import re
+            m = re.search(rf"{prefix}=([^;\s]+)", val)
+            if m:
+                val = m.group(1).strip().strip('"\'')
+    return val.strip()
+
 class SessionManager:
     def __init__(self, file_path=COOKIES_FILE):
         self.file_path = file_path
@@ -52,12 +67,15 @@ class SessionManager:
         return os.getenv("INSTAGRAM_SESSION_ID", "").strip()
 
     def set_instagram_session_id(self, session_id: str) -> bool:
-        """Yeni Instagram sessionid kaydeder."""
+        """Yeni Instagram sessionid kaydeder. Otomatik temizleme uygular."""
         if not session_id:
+            return False
+        clean_sid = _clean_cookie_val(session_id, "sessionid")
+        if not clean_sid:
             return False
         with self._lock:
             data = self._load()
-            data["instagram_session_id"] = session_id.strip()
+            data["instagram_session_id"] = clean_sid
             data["instagram_updated_at"] = int(time.time())
             self._save(data)
             return True
@@ -76,13 +94,21 @@ class SessionManager:
         return env_auth, env_ct0
 
     def set_twitter_credentials(self, auth_token: str, ct0: str) -> bool:
-        """Yeni Twitter/X auth_token ve ct0 kaydeder."""
+        """Yeni Twitter/X auth_token ve ct0 kaydeder. Karışıklığı ve ön ekleri otomatik düzeltir."""
         if not auth_token or not ct0:
             return False
+        c_auth = _clean_cookie_val(auth_token, "auth_token")
+        c_ct0 = _clean_cookie_val(ct0, "ct0")
+
+        # Kullanıcı auth_token ve ct0 sırasını ters yazarsa akıllıca düzelt:
+        # ct0 genelde ~160 karakterdir, auth_token ise ~40 karakterdir.
+        if len(c_auth) > 100 and len(c_ct0) <= 50:
+            c_auth, c_ct0 = c_ct0, c_auth
+
         with self._lock:
             data = self._load()
-            data["twitter_auth_token"] = auth_token.strip()
-            data["twitter_ct0"] = ct0.strip()
+            data["twitter_auth_token"] = c_auth
+            data["twitter_ct0"] = c_ct0
             data["twitter_updated_at"] = int(time.time())
             self._save(data)
             return True
