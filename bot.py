@@ -27,6 +27,7 @@ from tweet_curator_agent import curate_smart_replies_and_caption
 from reels_store import reels_store
 from reels_radar import find_top_new_viral_reel, download_video_bytes
 from twitter_video_radar import find_top_new_viral_twitter_video, download_twitter_video_bytes
+from history_store import history_store
 
 BOT_TOKEN = os.getenv("BOT_TOKEN", "").strip()
 
@@ -80,6 +81,43 @@ def run_health_server():
         except Exception as e:
             print(f"Health server hatası: {e}")
             break
+
+def parse_stat_number(val_str):
+    """'120k', '1.5m', '120.000', '120,000' veya '5000' gibi metinleri int sayıya çevirir."""
+    if not val_str:
+        return None
+    val = str(val_str).strip().lower()
+    multiplier = 1
+    if val.endswith("k"):
+        multiplier = 1_000
+        val = val[:-1]
+    elif val.endswith("m"):
+        multiplier = 1_000_000
+        val = val[:-1]
+    elif val.endswith("b"):  # Bin için 'b' yazılabilir
+        multiplier = 1_000
+        val = val[:-1]
+    else:
+        # Suffix yoksa; binlik ayırıcıları (. veya ,) temizle (örn: 120.000 -> 120000)
+        val = val.replace(".", "").replace(",", "")
+
+    # Suffix varsa ondalık için virgülü noktaya çevir (örn: 1,5k -> 1.5k)
+    if multiplier > 1:
+        val = val.replace(",", ".")
+
+    try:
+        return int(float(val) * multiplier)
+    except Exception:
+        return None
+
+def parse_post_id(val_str):
+    """'#12' veya '12' gibi metinlerden int post ID çıkarır."""
+    if not val_str:
+        return None
+    cleaned = str(val_str).strip().lstrip("#")
+    if cleaned.isdigit():
+        return int(cleaned)
+    return None
 
 def send_chat_action(chat_id, action="upload_photo", message_thread_id=None):
     try:
@@ -710,7 +748,7 @@ def handle_tweet_images(chat_id, msg_id, text):
     """Eski /img çağrılarını yeni akıllı /ig motoruna yönlendirir."""
     handle_ig_command(chat_id, msg_id, text)
 
-def handle_ig_command(chat_id, msg_id, raw_input, include_comments=True, message_thread_id=None, is_radar=False):
+def handle_ig_command(chat_id, msg_id, raw_input, include_comments=True, message_thread_id=None, is_radar=False, post_id=None):
     """
     Akıllı Instagram Şablon Motoru:
     - /ig (veya doğrudan link): Ana tweet + 100+ popüler yorumlar + fotoğraflar (Full paket)
@@ -859,6 +897,22 @@ def handle_ig_command(chat_id, msg_id, raw_input, include_comments=True, message
 
         total_slides = len(slides)
 
+        # Post geçmişine kaydet
+        if not post_id and not is_radar:
+            try:
+                post_id = history_store.add_post(
+                    source_type="tweet",
+                    delivery_mode="manual_ig" if include_comments else "manual_url",
+                    link=tweet_url,
+                    author=resolved_handle,
+                    text=(main_info or {}).get("text", ""),
+                    metrics={"likes": (main_info or {}).get("likes", 0)}
+                )
+            except Exception as hist_err:
+                print(f"Manuel post geçmiş kaydetme hatası: {hist_err}")
+
+        post_tag = f" #{post_id}" if post_id else ""
+
         # 4. Aşama: Tek tıkla indirme ve albüm teslimatı
         step_pkg = "4/4" if include_comments else "3/3"
         if status_msg_id:
@@ -867,7 +921,7 @@ def handle_ig_command(chat_id, msg_id, raw_input, include_comments=True, message
         # Tek dosya ise (sadece ana tweet)
         if total_slides == 1:
             caption = (
-                "✨ <b>Instagram Post Şablonu Hazır!</b>\n"
+                f"✨ <b>Instagram Post Şablonu Hazır!{post_tag}</b>\n"
                 f"👤 <b>Yazar:</b> {resolved_name} (@{resolved_handle})\n"
                 f"📐 <b>Ölçü:</b> 1080 × 1350 px (OLED Siyah Arka Plan)\n"
                 "📁 <i>Kayıpsız HD Orijinal PNG (Instagram'a Hazır)</i>"
@@ -889,48 +943,10 @@ def handle_ig_command(chat_id, msg_id, raw_input, include_comments=True, message
                 timeout=35
             )
         else:
-            # 1'den fazla slayt varsa:
-            # [DEVRE DIŞI / YORUM SATIRI] A) ZIP Paketi Oluştur (Android telefon kaynak tasarrufu için kapatıldı)
-            # zip_buf = io.BytesIO()
-            # with zipfile.ZipFile(zip_buf, "w", zipfile.ZIP_DEFLATED) as zf:
-            #     for s in slides:
-            #         zf.writestr(s["filename"], s["bytes"])
-            # zip_buf.seek(0)
-            # zip_filename = f"Instagram_Paketi_{resolved_handle}_{tweet_id}.zip"
-            # 
-            # zip_caption = (
-            #     f"📦 <b>Instagram Post Paketi (Tek Tıkla İndir)</b>\n\n"
-            #     f"👤 <b>Yazar:</b> {resolved_name} (@{resolved_handle})\n"
-            #     f"📊 <b>İçerik:</b> {total_slides} Slayt\n"
-            #     f" • 📌 1 Ana Tweet Şablonu\n"
-            #     + (f" • 💬 {len(qualifying_replies)} Popüler Yorum (100+ Beğeni)\n" if len(qualifying_replies) > 0 else "")
-            #     + (f" • 🖼️ {added_photos} Kaydırmalı Fotoğraf\n" if added_photos > 0 else "")
-            #     + f"📐 <b>Ölçü:</b> 1080 × 1350 px (OLED Siyah)\n"
-            #     f"📁 <i>Tüm slaytlar sıralı ve kayıpsız HD PNG olarak pakettedir.</i>"
-            # )
-            # 
-            # # ZIP dosyasını ilet
-            # zip_data = {
-            #     "chat_id": chat_id,
-            #     "caption": zip_caption,
-            #     "parse_mode": "HTML",
-            # }
-            # if msg_id:
-            #     zip_data["reply_to_message_id"] = msg_id
-            # if message_thread_id:
-            #     zip_data["message_thread_id"] = message_thread_id
-            # 
-            # requests.post(
-            #     f"{API_URL}/sendDocument",
-            #     data=zip_data,
-            #     files={"document": (zip_filename, zip_buf.getvalue(), "application/zip")},
-            #     timeout=45
-            # )
-
-            # B) Slaytları Telegram içinde tek bir albüm baloncuğunda (sendMediaGroup) gönder
+            # B) Slaytları Telegram içinde tek bir albüm baloncuğunda gönder
             files_data = [(s["filename"], s["bytes"]) for s in slides]
             album_caption = (
-                "✨ <b>Instagram Post Şablonu Hazır!</b>\n"
+                f"✨ <b>Instagram Post Şablonu Hazır!{post_tag}</b>\n"
                 f"👤 <b>Yazar:</b> {resolved_name} (@{resolved_handle})\n"
                 f"📐 <b>Ölçü:</b> 1080 × 1350 px (OLED Siyah Arka Plan)\n"
                 "📁 <i>Kayıpsız HD Orijinal PNG (Instagram'a Hazır)</i>"
@@ -1159,15 +1175,43 @@ def deliver_ai_curated_tweet(chat_id, tweet_dict, ai_eval, thread_id=None, reply
                 except Exception as p_err:
                     print(f"AI Fotoğraf {p_idx} hatası: {p_err}")
 
-        # 4. Telegram Sade Başlık Mesajı
+        # 4. Post Geçmişine Kaydet (#ID)
+        post_id = None
+        try:
+            post_id = history_store.add_post(
+                source_type="tweet",
+                delivery_mode="ai_curator",
+                link=tweet_url,
+                author=resolved_handle,
+                text=tweet_dict.get("text", ""),
+                metrics={
+                    "likes": likes,
+                    "retweets": tweet_dict.get("retweets", 0),
+                    "replies": tweet_dict.get("replies", 0),
+                    "quotes": tweet_dict.get("quotes", 0),
+                    "bookmarks": tweet_dict.get("bookmarks", 0),
+                    "views": tweet_dict.get("views", 0),
+                },
+                ai_score=score,
+                ai_reason=reason,
+                ai_model=model_used,
+                selected_replies=selected_replies,
+                caption=caption_text
+            )
+        except Exception as hist_err:
+            print(f"AI Tweet geçmiş kaydetme hatası: {hist_err}")
+
+        post_tag = f" #{post_id}" if post_id else ""
+
+        # 5. Telegram Sade Başlık Mesajı
         ai_header = (
-            f"🤖 <b>Ai Seçimi</b>\n"
+            f"🤖 <b>Ai Seçimi{post_tag}</b>\n"
             f"🔗 <b>Orijinal link:</b> {tweet_url}"
         )
         send_message(chat_id, ai_header, reply_to_message_id=reply_to_id, message_thread_id=thread_id)
 
-        # 5. Slaytları İlet
-        album_caption = f"🤖 <b>AI Seçimli Albüm ({len(slides)} Slayt):</b>\n@{resolved_handle} • Skor: {score}/10"
+        # 6. Slaytları İlet
+        album_caption = f"🤖 <b>AI Seçimli Albüm{post_tag} ({len(slides)} Slayt):</b>\n@{resolved_handle} • Skor: {score}/10"
         if len(slides) == 1:
             doc_data = {
                 "chat_id": chat_id,
@@ -1229,8 +1273,29 @@ def trigger_radar_delivery(chat_id, thread_id=None, reply_to_id=None):
             name = top_tweet.get("name", author)
             likes = top_tweet.get("likes", 0)
 
+            post_id = None
+            try:
+                post_id = history_store.add_post(
+                    source_type="tweet",
+                    delivery_mode="standard",
+                    link=tweet_url,
+                    author=author,
+                    text=top_tweet.get("text", ""),
+                    metrics={
+                        "likes": likes,
+                        "retweets": top_tweet.get("retweets", 0),
+                        "replies": top_tweet.get("replies", 0),
+                        "quotes": top_tweet.get("quotes", 0),
+                        "bookmarks": top_tweet.get("bookmarks", 0),
+                        "views": top_tweet.get("views", 0),
+                    }
+                )
+            except Exception as hist_err:
+                print(f"Standart tweet geçmiş kaydetme hatası: {hist_err}")
+
+            post_tag = f" #{post_id}" if post_id else ""
             header_text = (
-                f"📌 <b>Viral Tweet</b>\n"
+                f"📌 <b>Viral Tweet{post_tag}</b>\n"
                 f"🔗 <b>Orijinal link:</b> {tweet_url}"
             )
             send_message(chat_id, header_text, reply_to_message_id=reply_to_id, message_thread_id=thread_id)
@@ -1242,7 +1307,8 @@ def trigger_radar_delivery(chat_id, thread_id=None, reply_to_id=None):
                 raw_input=tweet_url,
                 include_comments=True,
                 message_thread_id=thread_id,
-                is_radar=True
+                is_radar=True,
+                post_id=post_id
             )
             # İnce ayraç
             send_message(chat_id, "----------------------------------------", message_thread_id=thread_id)
@@ -1342,8 +1408,25 @@ def deliver_instagram_reel(chat_id, thread_id=None, reply_to_id=None):
         clean_caption = (caption_raw[:300] + "...") if len(caption_raw) > 300 else caption_raw
         clean_cap_escaped = escape(clean_caption) if clean_caption else "<i>(Açıklama yok)</i>"
 
+        post_id = None
+        try:
+            post_id = history_store.add_post(
+                source_type="instagram_reel",
+                delivery_mode="reels",
+                link=reel_url,
+                author=username,
+                text=caption_raw,
+                metrics={
+                    "plays": plays,
+                    "likes": likes
+                }
+            )
+        except Exception as hist_err:
+            print(f"Reels geçmiş kaydetme hatası: {hist_err}")
+
+        post_tag = f" #{post_id}" if post_id else ""
         caption = (
-            f"🎬 <b>[Instagram] Yeni Viral Reels!</b>\n\n"
+            f"🎬 <b>[Instagram] Yeni Viral Reels!{post_tag}</b>\n\n"
             f"👤 <b>Yazar:</b> @{username} ({escape(full_name)})\n"
             f"🔥 <b>İzlenme:</b> {plays:,}\n"
             f"❤️ <b>Beğeni:</b> {likes:,}\n"
@@ -1418,8 +1501,27 @@ def deliver_twitter_video(chat_id, thread_id=None, reply_to_id=None):
         clean_text_escaped = escape(clean_text) if clean_text else "<i>(Metin yok)</i>"
 
         views_str = f"👁️ <b>Görüntülenme:</b> {views:,}\n" if views else ""
+
+        post_id = None
+        try:
+            post_id = history_store.add_post(
+                source_type="twitter_video",
+                delivery_mode="twitter_video",
+                link=tweet_url,
+                author=author,
+                text=text_raw,
+                metrics={
+                    "likes": likes,
+                    "retweets": retweets,
+                    "views": views
+                }
+            )
+        except Exception as hist_err:
+            print(f"Twitter video geçmiş kaydetme hatası: {hist_err}")
+
+        post_tag = f" #{post_id}" if post_id else ""
         caption = (
-            f"🐦 <b>[Twitter / X] Yeni Viral Video!</b>\n\n"
+            f"🐦 <b>[Twitter / X] Yeni Viral Video!{post_tag}</b>\n\n"
             f"👤 <b>Yazar:</b> @{author} ({escape(name)})\n"
             f"❤️ <b>Beğeni:</b> {likes:,}\n"
             f"🔁 <b>Retweet:</b> {retweets:,}\n"
@@ -1535,26 +1637,36 @@ def handle_update(update):
                 "💎 <b>Full Instagram Paketi (/ig):</b>\n"
                 "<code>/ig https://x.com/kullanici/status/1234567890</code> (veya doğrudan link at);\n"
                 " • 📌 OLED dark ana tweet şablonunu hazırlar,\n"
-                " • 💬 Varsa 100+ beğeni almış en popüler yorumları (max 4, min 1) şablona dönüştürür,\n"
+                " • 💬 Varsa 100+ beğeni almış en popüler yorumları (max 6) şablona dönüştürür,\n"
                 " • 🖼️ Tweet içindeki kaydırmalı fotoğrafları 1080×1350 tuvale basar,\n"
                 " • 📸 Telegram içi <b>Önizleme Albümü</b> olarak kayıpsız teslim eder!\n\n"
                 "⚡ <b>Yorumsuz Hızlı Şablon (/url):</b>\n"
                 "<code>/url https://x.com/kullanici/status/1234567890</code>\n"
                 " • Popüler yorumlara <b>bakmaz</b>; sadece ana tweet'i ve varsa tweet içi fotoğrafları hızlıca hazırlar.\n\n"
                 "🛰️ <b>Viral Tweet Radarı:</b>\n"
-                " • <code>/radar_start</code> - Bulunulan odayı otomatik hedefe bağlar ve 2 saatlik (120 dk) taramayı başlatır.\n"
-                " • <code>/radar_now</code> - Beklemeden hemen yeni bir popüler tweet bulup gönderir.\n"
+                " • <code>/radar_start</code> - Bulunulan odayı otomatik hedefe bağlar ve periyodik taramayı başlatır.\n"
+                " • <code>/radar_now</code> - Beklemeden hemen yeni viral tweet bulup gönderir.\n"
                 " • <code>/radar_stop</code> - Otomatik taramayı duraklatır.\n"
                 " • <code>/radar_status</code> - Radar durumunu ve istatistiklerini gösterir.\n"
-                " • <code>/radar_set 3000</code> - Beğeni eşiğini ayarlar.\n"
+                " • <code>/radar_set 5000</code> - Beğeni eşiğini ayarlar.\n"
                 " • <code>/radar_interval 120</code> - Tarama süresini ayarlar (dakika).\n\n"
-                "🎬 <b>Viral Reels & Video Radarı (Agency AI Filtreli):</b>\n"
-                " • <code>/reels_start</code> - Bulunulan odayı (örn: ❗ ViralReels) hedefe bağlar ve 2 saatlik taramayı başlatır.\n"
-                " • <code>/reels_now</code> - Beklemeden hemen yeni bir dikey viral Reels/Video bulup MP4 olarak indirir.\n"
-                " • <code>/reels_stop</code> - Reels radarını duraklatır.\n"
-                " • <code>/reels_status</code> - Reels radarı durumunu ve istatistiklerini gösterir.\n"
+                "🎬 <b>Viral Reels & Video Radarı:</b>\n"
+                " • <code>/reels_start</code> - Bulunulan odayı hedefe bağlar ve periyodik taramayı başlatır.\n"
+                " • <code>/reels_now</code> - Beklemeden yeni dikey viral Reels/Video bulup indirir.\n"
+                " • <code>/ig_now</code> - Sadece Instagram Reels getirir.\n"
+                " • <code>/x_now</code> - Sadece Twitter/X videosu getirir.\n"
+                " • <code>/reels_stop</code> - Video radarını duraklatır.\n"
+                " • <code>/reels_status</code> - Video radarı durumunu ve istatistiklerini gösterir.\n"
                 " • <code>/reels_set 100000</code> - Minimum izlenme eşiğini ayarlar.\n"
                 " • <code>/reels_interval 120</code> - Tarama süresini ayarlar (dakika).\n\n"
+                "📈 <b>Post Geçmişi & Geri Bildirim:</b>\n"
+                " • <code>/gecmis</code> - Son 10 postu ve performans durumunu listeler.\n"
+                " • <code>/tuttu #12</code> - Postu Instagram'da 'TUTTU' (başarılı) olarak etiketler.\n"
+                " • <code>/tutmadi #12</code> - Postu Instagram'da 'TUTMADI' (başarısız) olarak etiketler.\n"
+                " • <code>/sonuc #12 &lt;izlenme&gt; [paylaşım] [kaydetme]</code> - Gerçek Instagram sonuçlarını kaydeder (10 veri sonrası en üst %25 otomatik 'TUTTU' sayılır).\n"
+                " • <code>/ekle &lt;link&gt; &lt;tuttu|tutmadi&gt; [izlenme]</code> - Botun atmadığı eski/harici postları kütüphaneye ekler.\n"
+                " • <code>/ornekler</code> - Altın kütüphanedeki başarılı postları listeler.\n"
+                " • <code>/sil #12</code> - Hatalı kaydı geçmişten siler.\n\n"
                 "Hemen dene! 🚀"
             )
             send_message(chat_id, welcome, reply_to_message_id=msg_id, message_thread_id=thread_id)
@@ -1821,6 +1933,261 @@ def handle_update(update):
         # /img komutu kontrolü (Geriye dönük uyumluluk)
         if text.startswith("/img"):
             handle_ig_command(chat_id, msg_id, text, include_comments=True, message_thread_id=thread_id)
+            return
+
+        # /gecmis: Son 10 postu ve geri bildirim durumunu listeler
+        if text.startswith("/gecmis"):
+            recent = history_store.get_recent_posts(limit=10)
+            if not recent:
+                send_message(
+                    chat_id,
+                    "📭 <b>Henüz kayıtlı bir post geçmişi bulunmuyor.</b>\nRadar veya /ig ile gönderilen postlar burada otomatik listelenecektir.",
+                    reply_to_message_id=msg_id,
+                    message_thread_id=thread_id
+                )
+                return
+
+            lines = ["📜 <b>Son 10 Post ve Performans Durumu:</b>\n"]
+            for p in recent:
+                pid = p.get("id")
+                stype = p.get("source_type", "tweet")
+                author = p.get("author", "bilinmiyor")
+                res = p.get("results", {})
+                tag = res.get("tag")
+                views = res.get("views")
+
+                if stype == "tweet":
+                    type_str = "AI Tweet" if p.get("delivery_mode") == "ai_curator" else "Tweet"
+                elif stype == "instagram_reel":
+                    type_str = "Reels"
+                elif stype == "twitter_video":
+                    type_str = "X Video"
+                elif stype == "retroactive":
+                    type_str = "Eski Post"
+                else:
+                    type_str = stype
+
+                if tag == "tuttu":
+                    tag_str = f"🟢 TUTTU" + (f" ({views:,} izlenme)" if views else "")
+                elif tag == "tutmadi":
+                    tag_str = f"🔴 TUTMADI" + (f" ({views:,} izlenme)" if views else "")
+                elif tag == "orta":
+                    tag_str = f"🟡 ORTA" + (f" ({views:,} izlenme)" if views else "")
+                else:
+                    tag_str = f"⚪ ({views:,} izlenme)" if views else "⚪ Sonuçsuz"
+
+                lines.append(f"• <b>#{pid}</b> [{type_str}] @{author} — {tag_str}")
+
+            lines.append("\nℹ️ <i>Geri bildirim için:</i> <code>/tuttu #12</code> veya <code>/sonuc #12 120k</code>")
+            send_message(chat_id, "\n".join(lines), reply_to_message_id=msg_id, message_thread_id=thread_id)
+            return
+
+        # /tuttu: Postu Instagram'da başarılı olarak etiketler
+        if text.startswith("/tuttu"):
+            parts = text.split()
+            if len(parts) > 1:
+                pid = parse_post_id(parts[1])
+                if pid:
+                    ok = history_store.set_tag(pid, "tuttu", tagged_by="manual")
+                    if ok:
+                        send_message(
+                            chat_id,
+                            f"✅ <b>Post #{pid} 'TUTTU' olarak etiketlendi!</b>\nİçerik altın kütüphaneye dahil edildi ve gelecekteki seçimlerde başarılı örnek olarak sunulacak.",
+                            reply_to_message_id=msg_id,
+                            message_thread_id=thread_id
+                        )
+                        return
+                    else:
+                        send_message(chat_id, f"❌ Post #{pid} geçmişte bulunamadı.", reply_to_message_id=msg_id, message_thread_id=thread_id)
+                        return
+            send_message(chat_id, "⚠️ Kullanım: <code>/tuttu #12</code> veya <code>/tuttu 12</code>", reply_to_message_id=msg_id, message_thread_id=thread_id)
+            return
+
+        # /tutmadi: Postu Instagram'da başarısız olarak etiketler
+        if text.startswith("/tutmadi"):
+            parts = text.split()
+            if len(parts) > 1:
+                pid = parse_post_id(parts[1])
+                if pid:
+                    ok = history_store.set_tag(pid, "tutmadi", tagged_by="manual")
+                    if ok:
+                        send_message(
+                            chat_id,
+                            f"❌ <b>Post #{pid} 'TUTMADI' olarak etiketlendi.</b>\nBu tarz içerikler gelecekteki seçimlerde filtrelenecektir.",
+                            reply_to_message_id=msg_id,
+                            message_thread_id=thread_id
+                        )
+                        return
+                    else:
+                        send_message(chat_id, f"❌ Post #{pid} geçmişte bulunamadı.", reply_to_message_id=msg_id, message_thread_id=thread_id)
+                        return
+            send_message(chat_id, "⚠️ Kullanım: <code>/tutmadi #12</code> veya <code>/tutmadi 12</code>", reply_to_message_id=msg_id, message_thread_id=thread_id)
+            return
+
+        # /sonuc: Gerçek Instagram izlenme ve etkileşim sonuçlarını kaydeder
+        if text.startswith("/sonuc"):
+            parts = text.split()
+            if len(parts) >= 3:
+                pid = parse_post_id(parts[1])
+                views = parse_stat_number(parts[2])
+                shares = parse_stat_number(parts[3]) if len(parts) > 3 else None
+                saves = parse_stat_number(parts[4]) if len(parts) > 4 else None
+                likes = parse_stat_number(parts[5]) if len(parts) > 5 else None
+                comments = parse_stat_number(parts[6]) if len(parts) > 6 else None
+
+                if pid and views is not None:
+                    post = history_store.update_results(
+                        post_id=pid,
+                        views=views,
+                        shares=shares,
+                        saves=saves,
+                        likes=likes,
+                        comments=comments
+                    )
+                    if post:
+                        res = post.get("results", {})
+                        tag = res.get("tag")
+                        tagged_by = res.get("tagged_by")
+
+                        status_line = ""
+                        if tag == "tuttu":
+                            status_line = "🟢 <b>TUTTU</b>" + (" (Dinamik En Üst %25)" if tagged_by == "auto" else " (Manuel)")
+                        elif tag == "tutmadi":
+                            status_line = "🔴 <b>TUTMADI</b>" + (" (Dinamik Alt %25)" if tagged_by == "auto" else " (Manuel)")
+                        elif tag == "orta":
+                            status_line = "🟡 <b>ORTA</b> (Dinamik %50 Dilim)"
+                        else:
+                            status_line = "⚪ Henüz otomatik eşik oluşmadı (10 posttan az veri var; <code>/tuttu</code> ile manuel etiketleyebilirsiniz)"
+
+                        summary_txt = (
+                            f"📊 <b>Post #{pid} Instagram Performansı Kaydedildi!</b>\n\n"
+                            f"• 👁️ <b>İzlenme:</b> {views:,}\n"
+                            + (f"• 📤 <b>Paylaşım:</b> {shares:,}\n" if shares is not None else "")
+                            + (f"• 🔖 <b>Kaydetme:</b> {saves:,}\n" if saves is not None else "")
+                            + (f"• ❤️ <b>Beğeni:</b> {likes:,}\n" if likes is not None else "")
+                            + (f"• 💬 <b>Yorum:</b> {comments:,}\n" if comments is not None else "")
+                            + f"\n🏷️ <b>Durum:</b> {status_line}"
+                        )
+                        send_message(chat_id, summary_txt, reply_to_message_id=msg_id, message_thread_id=thread_id)
+                        return
+                    else:
+                        send_message(chat_id, f"❌ Post #{pid} geçmişte bulunamadı.", reply_to_message_id=msg_id, message_thread_id=thread_id)
+                        return
+
+            send_message(
+                chat_id,
+                "⚠️ <b>Kullanım:</b> <code>/sonuc #12 &lt;izlenme&gt; [paylaşım] [kaydetme] [beğeni] [yorum]</code>\n"
+                "Örnek: <code>/sonuc #12 120k 850 1400</code>\n"
+                "<i>(10 post izlenmesi kaydedildiğinde en iyi %25 otomatik 'TUTTU' sayılır).</i>",
+                reply_to_message_id=msg_id,
+                message_thread_id=thread_id
+            )
+            return
+
+        # /ekle: Botun atmadığı harici/eski postları geriye dönük ekler
+        if text.startswith("/ekle"):
+            parts = text.split()
+            if len(parts) >= 3:
+                link = parts[1].strip()
+                tag = parts[2].strip().lower()
+                if tag in ["tuttu", "tutmadi"]:
+                    views = parse_stat_number(parts[3]) if len(parts) > 3 else None
+                    shares = parse_stat_number(parts[4]) if len(parts) > 4 else None
+                    saves = parse_stat_number(parts[5]) if len(parts) > 5 else None
+
+                    author = "harici"
+                    match = re.search(r"(?:twitter\.com|x\.com)/([a-zA-Z0-9_]+)", link)
+                    if match:
+                        author = match.group(1)
+
+                    pid = history_store.add_retroactive_post(
+                        link=link,
+                        tag=tag,
+                        views=views,
+                        shares=shares,
+                        saves=saves,
+                        author=author
+                    )
+
+                    tag_emoji = "🟢 TUTTU" if tag == "tuttu" else "🔴 TUTMADI"
+                    stat_info = f"\n• 👁️ İzlenme: {views:,}" if views else ""
+
+                    send_message(
+                        chat_id,
+                        f"✅ <b>Eski Post Başarıyla Eklendi (#{pid})!</b>\n"
+                        f"• <b>Durum:</b> {tag_emoji}\n"
+                        f"• <b>Yazar:</b> @{author}\n"
+                        f"• <b>Link:</b> {link}"
+                        f"{stat_info}\n\n"
+                        "<i>Kütüphaneye işlendi, yapay zeka öğrenme verisi olarak kullanılacaktır.</i>",
+                        reply_to_message_id=msg_id,
+                        message_thread_id=thread_id
+                    )
+                    return
+            send_message(
+                chat_id,
+                "⚠️ <b>Kullanım:</b> <code>/ekle &lt;link&gt; &lt;tuttu|tutmadi&gt; [izlenme] [paylaşım] [kaydetme]</code>\n"
+                "Örnek: <code>/ekle https://x.com/user/status/123 tuttu 250k 1500 3200</code>",
+                reply_to_message_id=msg_id,
+                message_thread_id=thread_id
+            )
+            return
+
+        # /ornekler: Altın kütüphanedeki 'TUTTU' postlarını özetler
+        if text.startswith("/ornekler"):
+            stats = history_store.get_stats_summary()
+            tagged_tuttu = history_store.get_tagged_posts("tuttu")
+
+            if not tagged_tuttu:
+                send_message(
+                    chat_id,
+                    "🏆 <b>Altın Kütüphane (TUTTU Havuzu) Boş</b>\n\n"
+                    "Henüz başarılı olarak etiketlenmiş bir post bulunmuyor.\n"
+                    "• Gönderilen postları etiketlemek için: <code>/tuttu #12</code> veya <code>/sonuc #12 150k</code>\n"
+                    "• Eski başarılı postları eklemek için: <code>/ekle &lt;link&gt; tuttu [izlenme]</code>",
+                    reply_to_message_id=msg_id,
+                    message_thread_id=thread_id
+                )
+                return
+
+            lines = [
+                "🏆 <b>Altın Kütüphane — Başarılı 'TUTTU' Postları</b>\n",
+                f"• <b>Toplam Başarılı Post:</b> {stats['tuttu_count']} adet",
+            ]
+            if stats['avg_views'] > 0:
+                lines.append(f"• <b>Ortalama İzlenme:</b> {stats['avg_views']:,}")
+            if stats["is_dynamic_active"] and stats["threshold_75"]:
+                lines.append(f"• <b>En İyi %25 Eşiği:</b> {stats['threshold_75']:,} izlenme (Dinamik)")
+            lines.append("")
+
+            for p in tagged_tuttu[:10]:
+                pid = p.get("id")
+                author = p.get("author", "bilinmiyor")
+                res = p.get("results", {})
+                v = res.get("views")
+                v_str = f" ({v:,} izlenme)" if v else ""
+                reason = p.get("ai_reason") or p.get("text", "")
+                reason_short = (reason[:60] + "...") if len(reason) > 60 else reason
+
+                lines.append(f"• <b>#{pid}</b> @{author}{v_str}\n  <i>{escape(reason_short)}</i>\n  🔗 {p.get('link')}")
+
+            send_message(chat_id, "\n".join(lines), reply_to_message_id=msg_id, message_thread_id=thread_id)
+            return
+
+        # /sil: Hatalı postu geçmişten ve kütüphaneden siler
+        if text.startswith("/sil"):
+            parts = text.split()
+            if len(parts) > 1:
+                pid = parse_post_id(parts[1])
+                if pid:
+                    ok = history_store.delete_post(pid)
+                    if ok:
+                        send_message(chat_id, f"🗑️ <b>Post #{pid} başarıyla silindi.</b>", reply_to_message_id=msg_id, message_thread_id=thread_id)
+                        return
+                    else:
+                        send_message(chat_id, f"❌ Post #{pid} geçmişte bulunamadı.", reply_to_message_id=msg_id, message_thread_id=thread_id)
+                        return
+            send_message(chat_id, "⚠️ Kullanım: <code>/sil #12</code> veya <code>/sil 12</code>", reply_to_message_id=msg_id, message_thread_id=thread_id)
             return
 
         # Doğrudan atılan Twitter/X linklerini de otomatik algıla (/ig gibi full çalışır)
