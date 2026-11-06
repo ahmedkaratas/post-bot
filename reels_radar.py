@@ -10,6 +10,7 @@ import requests
 from reels_store import reels_store
 from video_curator_agent import filter_and_rank_videos, is_vertical_reels_format, detect_ad_or_spam
 from session_manager import session_manager
+from dedup_engine import dedup_engine
 
 PROJECT_DIR = os.path.dirname(os.path.abspath(__file__))
 
@@ -152,9 +153,12 @@ def find_top_new_viral_reel(min_plays=50000, min_likes=2000, max_age_hours=96):
         if not reel:
             continue
 
-        code = reel["code"]
-        # Daha önce gönderildiyse atla
-        if reels_store.is_sent(code) or reels_store.is_sent(f"ig_{code}"):
+        code = str(reel.get("code", "")).strip()
+        url = reel.get("url", f"https://www.instagram.com/reel/{code}/")
+        caption = reel.get("caption", "")
+
+        # 5 katmanlı tekilleştirme motoru ile kontrol et
+        if dedup_engine.is_sent(code, url=url, text=caption):
             continue
 
         # Tarih kontrolü (Çok eski değilse)
@@ -173,19 +177,11 @@ def find_top_new_viral_reel(min_plays=50000, min_likes=2000, max_age_hours=96):
     qualified = filter_and_rank_videos(parsed_candidates, platform="reels")
 
     if qualified:
-        return qualified[0], len(qualified), None
-
-    # Eğer katı popülerlik eşiğine tam uymadıysa ama henüz gönderilmemiş temiz videolar varsa:
-    fallback_unseen = []
-    for raw in raw_items:
-        r = parse_reel_item(raw)
-        if r and not reels_store.is_sent(r["code"]) and not reels_store.is_sent(f"ig_{r['code']}"):
-            fallback_unseen.append(r)
-
-    # Fallback havuzunu da kalite ve format filtresinden geçir
-    clean_fallbacks = filter_and_rank_videos(fallback_unseen, platform="reels")
-    if clean_fallbacks:
-        return clean_fallbacks[0], len(clean_fallbacks), None
+        chosen = qualified[0]
+        dedup_engine.reserve(chosen.get("code"))
+        if chosen.get("url"):
+            dedup_engine.reserve(chosen.get("url"))
+        return chosen, len(qualified), None
 
     return None, 0, "Kriterlere ve dikey Reels formatına uyan yeni bir viral Reels bulunamadı."
 

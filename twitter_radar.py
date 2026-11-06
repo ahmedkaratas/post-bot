@@ -14,6 +14,7 @@ import subprocess
 from datetime import datetime, timedelta, timezone
 from radar_store import radar_store
 from session_manager import session_manager
+from dedup_engine import dedup_engine
 
 PROJECT_DIR = os.path.dirname(os.path.abspath(__file__))
 SCRAPER_JS = os.path.join(PROJECT_DIR, "shots", "tweet-shot", "tools", "x-search.js")
@@ -108,8 +109,14 @@ def find_top_new_viral_tweet(min_faves=5000):
         detail = f" (URL: {html.escape(dbg_url)})" if dbg_url else ""
         return None, 0, f"Arama kriterlerine ({min_faves:,}+ beğeni) uyan yeni tweet bulunamadı.{detail}"
 
-    # Daha önce iletilmemiş olanları filtrele
-    unseen = [t for t in raw_tweets if not radar_store.is_sent(t.get("id"))]
+    # Daha önce iletilmemiş olanları filtrele (5 katmanlı tekilleştirme motoru)
+    unseen = []
+    for t in raw_tweets:
+        t_id = str(t.get("id", "")).strip()
+        t_url = t.get("url", "")
+        t_text = t.get("text", "")
+        if not dedup_engine.is_sent(t_id, url=t_url, text=t_text):
+            unseen.append(t)
 
     if not unseen:
         return None, len(raw_tweets), "Bulunan tüm popüler tweetler daha önce iletilmiş."
@@ -135,6 +142,11 @@ def find_top_new_viral_tweet(min_faves=5000):
     valid_unseen.sort(key=lambda x: int(x.get("likes") or 0), reverse=True)
     top_tweet = valid_unseen[0]
 
+    # Uçuş rezervasyonu koy
+    dedup_engine.reserve(top_tweet.get("id"))
+    if top_tweet.get("url"):
+        dedup_engine.reserve(top_tweet.get("url"))
+
     return top_tweet, len(valid_unseen), None
 
 from tweet_curator_agent import evaluate_tweet_for_instagram
@@ -154,19 +166,16 @@ def find_ai_curated_viral_tweet(min_faves=3000, exclude_id=None):
     if not raw_tweets:
         return None, 0, None, "Arama kriterlerine uyan tweet bulunamadı."
 
-    # Henüz iletilmemiş olanları filtrele
-    unseen = [t for t in raw_tweets if not radar_store.is_sent(f"ai_{t.get('id')}") and not radar_store.is_sent(t.get('id'))]
-    if exclude_id:
-        unseen_filtered = [t for t in unseen if str(t.get("id")) != str(exclude_id)]
-        if unseen_filtered:
-            unseen = unseen_filtered
-
-    if not unseen:
-        unseen = [t for t in raw_tweets if not radar_store.is_sent(f"ai_{t.get('id')}")]
-        if exclude_id:
-            unseen_filtered = [t for t in unseen if str(t.get("id")) != str(exclude_id)]
-            if unseen_filtered:
-                unseen = unseen_filtered
+    # Henüz iletilmemiş olanları filtrele (5 katmanlı tekilleştirme motoru)
+    unseen = []
+    for t in raw_tweets:
+        t_id = str(t.get("id", "")).strip()
+        t_url = t.get("url", "")
+        t_text = t.get("text", "")
+        if exclude_id and t_id == str(exclude_id):
+            continue
+        if not dedup_engine.is_sent(t_id, url=t_url, text=t_text):
+            unseen.append(t)
 
     if not unseen:
         return None, len(raw_tweets), None, "Tüm tweetler daha önce iletilmiş."
@@ -182,6 +191,10 @@ def find_ai_curated_viral_tweet(min_faves=3000, exclude_id=None):
     if evaluated:
         evaluated.sort(key=lambda x: x["ai_eval"].get("score", 0), reverse=True)
         best = evaluated[0]
+        # Uçuş rezervasyonu koy
+        dedup_engine.reserve(best.get("id"))
+        if best.get("url"):
+            dedup_engine.reserve(best.get("url"))
         return best, len(unseen), best["ai_eval"], None
 
     # Sert filtre kuralı: AI onaylamadıysa zorlama fallback yapma, bu turu boş geç

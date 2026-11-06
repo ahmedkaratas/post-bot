@@ -7,6 +7,7 @@ Otomatik viral tweet radarı için hedef grup/konu ID'lerini ve gönderilen twee
 import os
 import json
 import time
+import threading
 
 DATA_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
 DATA_FILE = os.path.join(DATA_DIR, "radar_data.json")
@@ -47,8 +48,10 @@ DEFAULT_STATE = {
 class RadarStore:
     def __init__(self, file_path=DATA_FILE):
         self.file_path = file_path
+        self._lock = threading.RLock()
         self._ensure_dir()
-        self.data = self._load()
+        with self._lock:
+            self.data = self._load()
 
     def _ensure_dir(self):
         os.makedirs(os.path.dirname(self.file_path), exist_ok=True)
@@ -77,82 +80,89 @@ class RadarStore:
             print(f"Radar veri kaydetme hatası: {e}")
 
     def get_config(self):
-        self.data = self._load()
-        chat_id = self.data.get("target_chat_id")
-        if chat_id is None:
-            chat_id = _get_default_radar_chat_id()
-        thread_id = self.data.get("target_thread_id")
-        if thread_id is None:
-            thread_id = _get_default_radar_thread_id()
-        is_active = self.data.get("is_active")
-        if is_active is None:
-            is_active = _get_default_radar_active()
+        with self._lock:
+            self.data = self._load()
+            chat_id = self.data.get("target_chat_id")
+            if chat_id is None:
+                chat_id = _get_default_radar_chat_id()
+            thread_id = self.data.get("target_thread_id")
+            if thread_id is None:
+                thread_id = _get_default_radar_thread_id()
+            is_active = self.data.get("is_active")
+            if is_active is None:
+                is_active = _get_default_radar_active()
 
-        return {
-            "target_chat_id": chat_id,
-            "target_thread_id": thread_id,
-            "target_title": self.data.get("target_title") or os.getenv("RADAR_TARGET_TITLE", "ViralGrup"),
-            "is_active": is_active,
-            "interval_minutes": self.data.get("interval_minutes", int(os.getenv("RADAR_INTERVAL_MINUTES", "120"))),
-            "min_faves": self.data.get("min_faves", int(os.getenv("RADAR_MIN_FAVES", "5000"))),
-            "last_run_timestamp": self.data.get("last_run_timestamp", 0),
-            "sent_count": len(self.data.get("sent_tweets", {}))
-        }
+            return {
+                "target_chat_id": chat_id,
+                "target_thread_id": thread_id,
+                "target_title": self.data.get("target_title") or os.getenv("RADAR_TARGET_TITLE", "ViralGrup"),
+                "is_active": is_active,
+                "interval_minutes": self.data.get("interval_minutes", int(os.getenv("RADAR_INTERVAL_MINUTES", "120"))),
+                "min_faves": self.data.get("min_faves", int(os.getenv("RADAR_MIN_FAVES", "5000"))),
+                "last_run_timestamp": self.data.get("last_run_timestamp", 0),
+                "sent_count": len(self.data.get("sent_tweets", {}))
+            }
 
     def set_target(self, chat_id, thread_id=None, title=None):
-        self.data = self._load()
-        self.data["target_chat_id"] = chat_id
-        self.data["target_thread_id"] = thread_id
-        if title:
-            self.data["target_title"] = title
-        self.data["is_active"] = True
-        self._save()
+        with self._lock:
+            self.data = self._load()
+            self.data["target_chat_id"] = chat_id
+            self.data["target_thread_id"] = thread_id
+            if title:
+                self.data["target_title"] = title
+            self.data["is_active"] = True
+            self._save()
 
     def set_active(self, active: bool):
-        self.data = self._load()
-        self.data["is_active"] = bool(active)
-        self._save()
+        with self._lock:
+            self.data = self._load()
+            self.data["is_active"] = bool(active)
+            self._save()
 
     def set_min_faves(self, min_faves: int):
-        self.data = self._load()
-        self.data["min_faves"] = max(100, int(min_faves))
-        self._save()
+        with self._lock:
+            self.data = self._load()
+            self.data["min_faves"] = max(100, int(min_faves))
+            self._save()
 
     def set_interval(self, minutes: int):
-        self.data = self._load()
-        self.data["interval_minutes"] = max(5, int(minutes))
-        self._save()
+        with self._lock:
+            self.data = self._load()
+            self.data["interval_minutes"] = max(5, int(minutes))
+            self._save()
 
     def is_sent(self, tweet_id: str) -> bool:
-        self.data = self._load()
-        return str(tweet_id) in self.data.get("sent_tweets", {})
+        with self._lock:
+            self.data = self._load()
+            return str(tweet_id) in self.data.get("sent_tweets", {})
 
     def mark_sent(self, tweet_id: str, author: str = "", likes: int = 0):
-        self.data = self._load()
-        sent = self.data.setdefault("sent_tweets", {})
-        sent[str(tweet_id)] = {
-            "sent_at": int(time.time()),
-            "author": author,
-            "likes": likes
-        }
-        # Geçmişi makul boyutta tut (en son 1000 tweet)
-        if len(sent) > 1000:
-            oldest_keys = sorted(sent.keys(), key=lambda k: sent[k].get("sent_at", 0))[:200]
-            for k in oldest_keys:
-                sent.pop(k, None)
+        with self._lock:
+            self.data = self._load()
+            sent = self.data.setdefault("sent_tweets", {})
+            sent[str(tweet_id)] = {
+                "sent_at": int(time.time()),
+                "author": author,
+                "likes": likes
+            }
+            # Geçmişi makul boyutta tut (en son 1000 tweet)
+            if len(sent) > 1000:
+                oldest_keys = sorted(sent.keys(), key=lambda k: sent[k].get("sent_at", 0))[:200]
+                for k in oldest_keys:
+                    sent.pop(k, None)
 
-        self.data["last_run_timestamp"] = int(time.time())
-        self._save()
+            self.data["last_run_timestamp"] = int(time.time())
+            self._save()
 
     def touch_last_run(self, backoff_seconds: int = 0):
-        """Son çalışma zamanını günceller. backoff_seconds verilirse sonraki çalıştırmayı o kadar süre sonraya öteler."""
-        self.data = self._load()
-        if backoff_seconds > 0:
-            interval_secs = self.data.get("interval_minutes", 120) * 60
-            self.data["last_run_timestamp"] = int(time.time()) - interval_secs + backoff_seconds
-        else:
-            self.data["last_run_timestamp"] = int(time.time())
-        self._save()
+        with self._lock:
+            self.data = self._load()
+            if backoff_seconds > 0:
+                interval_secs = self.data.get("interval_minutes", 120) * 60
+                self.data["last_run_timestamp"] = int(time.time()) - interval_secs + backoff_seconds
+            else:
+                self.data["last_run_timestamp"] = int(time.time())
+            self._save()
 
 # Global tekil örnek
 radar_store = RadarStore()

@@ -29,6 +29,7 @@ from reels_radar import find_top_new_viral_reel, download_video_bytes
 from twitter_video_radar import find_top_new_viral_twitter_video, download_twitter_video_bytes
 from history_store import history_store
 from session_manager import session_manager
+from dedup_engine import dedup_engine
 import photoroom_engine
 
 BOT_TOKEN = os.getenv("BOT_TOKEN", "").strip()
@@ -1244,11 +1245,15 @@ def deliver_ai_curated_tweet(chat_id, tweet_dict, ai_eval, thread_id=None, reply
         # İnce ayraç
         send_message(chat_id, "----------------------------------------", message_thread_id=thread_id)
 
-        # 6. Tekilleştirme
+        # 6. Tekilleştirme (5 Katmanlı Motor)
+        dedup_engine.mark_sent(tweet_id, url=tweet_url, author=resolved_handle, text=tweet_dict.get("text", ""))
         radar_store.mark_sent(f"ai_{tweet_id}", author=resolved_handle, likes=likes)
         radar_store.mark_sent(tweet_id, author=resolved_handle, likes=likes)
         return True, None
     except Exception as e:
+        dedup_engine.release(tweet_dict.get("id"))
+        if tweet_dict.get("url"):
+            dedup_engine.release(tweet_dict.get("url"))
         print(f"AI Tweet teslimat hatası: {e}")
         return False, str(e)
 
@@ -1301,6 +1306,7 @@ def trigger_radar_delivery(chat_id, thread_id=None, reply_to_id=None):
                 f"🔗 <b>Orijinal link:</b> {tweet_url}"
             )
             send_message(chat_id, header_text, reply_to_message_id=reply_to_id, message_thread_id=thread_id)
+            dedup_engine.mark_sent(top_std_id, url=tweet_url, author=author, text=top_tweet.get("text", ""))
             radar_store.mark_sent(top_std_id, author=author, likes=likes)
 
             handle_ig_command(
@@ -1459,6 +1465,7 @@ def deliver_instagram_reel(chat_id, thread_id=None, reply_to_id=None):
         )
 
         if resp.status_code == 200:
+            dedup_engine.mark_sent(code, url=reel_url, author=username, text=caption_raw)
             reels_store.mark_sent(code, username=username, plays=plays, likes=likes)
             reels_store.mark_sent(f"ig_{code}", username=username, plays=plays, likes=likes)
             return True, None
@@ -1468,10 +1475,14 @@ def deliver_instagram_reel(chat_id, thread_id=None, reply_to_id=None):
                 payload["caption"] = f"🎬 [Instagram] Viral Reels: @{username}\nİzlenme: {plays:,}\nBeğeni: {likes:,}\n{reel_url}"
                 resp2 = requests.post(f"{API_URL}/sendVideo", data=payload, files={"video": (video_filename, video_bytes, "video/mp4")}, timeout=90)
                 if resp2.status_code == 200:
+                    dedup_engine.mark_sent(code, url=reel_url, author=username, text=caption_raw)
                     reels_store.mark_sent(code, username=username, plays=plays, likes=likes)
                     return True, None
+            dedup_engine.release(code)
+            dedup_engine.release(reel_url)
             return False, f"Telegram video gönderme hatası: {resp.text[:100]}"
     except Exception as e:
+        dedup_engine.release(top_reel.get("code") if 'top_reel' in locals() and top_reel else None)
         return False, str(e)
 
 def deliver_twitter_video(chat_id, thread_id=None, reply_to_id=None):
@@ -1555,6 +1566,7 @@ def deliver_twitter_video(chat_id, thread_id=None, reply_to_id=None):
         )
 
         if resp.status_code == 200:
+            dedup_engine.mark_sent(tweet_id, url=tweet_url, author=author, text=text_raw)
             reels_store.mark_sent(f"x_{tweet_id}", username=author, plays=views, likes=likes)
             reels_store.mark_sent(tweet_id, username=author, plays=views, likes=likes)
             return True, None
@@ -1564,10 +1576,14 @@ def deliver_twitter_video(chat_id, thread_id=None, reply_to_id=None):
                 payload["caption"] = f"🐦 [Twitter/X] Viral Video: @{author}\nBeğeni: {likes:,}\n{tweet_url}"
                 resp2 = requests.post(f"{API_URL}/sendVideo", data=payload, files={"video": (video_filename, video_bytes, "video/mp4")}, timeout=90)
                 if resp2.status_code == 200:
+                    dedup_engine.mark_sent(tweet_id, url=tweet_url, author=author, text=text_raw)
                     reels_store.mark_sent(f"x_{tweet_id}", username=author, plays=views, likes=likes)
                     return True, None
+            dedup_engine.release(tweet_id)
+            dedup_engine.release(tweet_url)
             return False, f"Telegram video gönderme hatası: {resp.text[:100]}"
     except Exception as e:
+        dedup_engine.release(top_video.get("id") if 'top_video' in locals() and top_video else None)
         return False, str(e)
 
 def trigger_reels_delivery(chat_id, thread_id=None, reply_to_id=None):

@@ -13,6 +13,7 @@ from datetime import datetime, timedelta, timezone
 from reels_store import reels_store
 from twitter_radar import load_twitter_credentials, get_dynamic_since_date
 from video_curator_agent import filter_and_rank_videos, is_vertical_reels_format, detect_ad_or_spam
+from dedup_engine import dedup_engine
 
 PROJECT_DIR = os.path.dirname(os.path.abspath(__file__))
 SCRAPER_JS = os.path.join(PROJECT_DIR, "shots", "tweet-shot", "tools", "x-search.js")
@@ -37,7 +38,8 @@ def search_fallback_viral_videos(min_faves=1000):
             resp = requests.get(url, headers=headers, timeout=6)
             if resp.status_code == 200:
                 data = resp.json()
-                tweets = data.get("user", {}).get("tweets", []) or data.get("tweets", [])
+                raw_t = data.get("tweets") or []
+                tweets = raw_t if isinstance(raw_t, list) else []
                 for tw in tweets:
                     media = tw.get("media", {})
                     videos = media.get("videos", [])
@@ -182,8 +184,15 @@ def find_top_new_viral_twitter_video(min_faves=3000):
     if not raw_tweets:
         return None, 0, f"Kriterlere ({min_faves:,}+ beğeni) uyan yeni video tweet bulunamadı."
 
-    # Henüz iletilmemiş olanları filtrele (x_id olarak kaydedilir)
-    unseen = [t for t in raw_tweets if not reels_store.is_sent(f"x_{t.get('id')}") and not reels_store.is_sent(t.get('id'))]
+    # Henüz iletilmemiş olanları filtrele (5 katmanlı tekilleştirme motoru)
+    unseen = []
+    for t in raw_tweets:
+        t_id = str(t.get("id", "")).strip()
+        t_url = t.get("url", "")
+        t_text = t.get("text", "")
+        if not dedup_engine.is_sent(t_id, url=t_url, text=t_text):
+            unseen.append(t)
+
     if not unseen:
         return None, 0, "Bulunan tüm video tweetler daha önce gönderilmiş."
 
@@ -204,6 +213,10 @@ def find_top_new_viral_twitter_video(min_faves=3000):
         author = t.get("author", "")
         v_details = fetch_twitter_video_details(t_id, author=author)
         if v_details and v_details.get("video_url"):
+            # Ayrıntı URL'si veya metni daha önce gönderilmiş mi son kontrol
+            if dedup_engine.is_sent(t_id, url=v_details.get("url"), text=v_details.get("text")):
+                continue
+
             if not v_details.get("likes") and t.get("likes"):
                 v_details["likes"] = t.get("likes")
             v_details["views"] = t.get("views", 0)
@@ -223,7 +236,12 @@ def find_top_new_viral_twitter_video(min_faves=3000):
     qualified = filter_and_rank_videos(candidate_videos, platform="twitter")
 
     if qualified:
-        return qualified[0], len(qualified), None
+        chosen = qualified[0]
+        # Anlık uçuş kilidi koy (aynı anda çalışan diğer aramalar bunu seçemesin)
+        dedup_engine.reserve(chosen.get("id"))
+        if chosen.get("url"):
+            dedup_engine.reserve(chosen.get("url"))
+        return chosen, len(qualified), None
 
     # Sert filtre kuralı: Dikey Reels formatına uymayan veya AI onayından geçmeyen hiçbir video gönderilmez
     return None, len(unseen), "Bu turda dikey Reels formatına ve AI onayına uyan yeni Twitter videosu bulunamadı."

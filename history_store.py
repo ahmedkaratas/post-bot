@@ -21,7 +21,7 @@ DEFAULT_STATE = {
 class HistoryStore:
     def __init__(self, file_path=HISTORY_FILE):
         self.file_path = file_path
-        self._lock = threading.Lock()
+        self._lock = threading.RLock()
         self._ensure_dir()
         self.data = self._load()
 
@@ -208,6 +208,39 @@ class HistoryStore:
             tagged = [p for p in tagged if p.get("results", {}).get("tag") == tag.lower()]
         tagged.sort(key=lambda x: int(x.get("id", 0)), reverse=True)
         return tagged
+
+    def is_item_already_delivered(self, item_id: str, link: str = "", text: str = "") -> bool:
+        """
+        Herhangi bir tweet ID'sinin, video kodunun, linkinin veya metninin
+        daha önce teslim edilip edilmediğini kontrol eder.
+        """
+        if not item_id and not link and not text:
+            return False
+
+        with self._lock:
+            self.data = self._load()
+            posts = self.data.get("posts", {}).values()
+
+            clean_id = str(item_id).strip()
+            clean_link = str(link).strip()
+            clean_text = str(text).strip()
+
+            for p in posts:
+                p_link = p.get("link", "")
+                p_text = p.get("text", "")
+
+                # 1. ID veya Link eşleşmesi
+                if clean_id and (f"/{clean_id}" in p_link or f"={clean_id}" in p_link or clean_id == str(p.get("id"))):
+                    return True
+
+                if clean_link and (clean_link in p_link or p_link in clean_link):
+                    return True
+
+                # 2. Metin eşleşmesi (aynı içerik farklı bir hesap tarafından atılsa bile engelle)
+                if clean_text and len(clean_text) >= 30 and (clean_text in p_text or p_text in clean_text):
+                    return True
+
+            return False
 
     def _calculate_auto_tag_locked(self, views: int) -> str:
         """
