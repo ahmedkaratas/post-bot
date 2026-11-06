@@ -1604,8 +1604,12 @@ def trigger_reels_delivery(chat_id, thread_id=None, reply_to_id=None):
             send_message(chat_id, err_msg, reply_to_message_id=reply_to_id, message_thread_id=thread_id)
     elif not ig_ok:
         print(f"Instagram video gönderilemedi: {ig_err}")
+        if reply_to_id is not None:
+            send_message(chat_id, f"ℹ️ <b>Instagram Reels:</b> {ig_err}", reply_to_message_id=reply_to_id, message_thread_id=thread_id)
     elif not x_ok:
         print(f"Twitter video gönderilemedi: {x_err}")
+        if reply_to_id is not None:
+            send_message(chat_id, f"ℹ️ <b>Twitter / X Video:</b> {x_err}", reply_to_message_id=reply_to_id, message_thread_id=thread_id)
 
     return (ig_ok or x_ok)
 
@@ -1842,10 +1846,12 @@ def handle_update(update):
                 ok = session_manager.set_instagram_session_id(new_session)
                 delete_message(chat_id, msg_id)
                 if ok:
+                    valid, test_res = session_manager.verify_instagram_session(new_session)
+                    durum_txt = "🟢 Aktif & Doğrulandı (HTTP 200)" if valid else f"⚠️ Kaydedildi Fakat: {test_res}"
                     send_message(
                         chat_id,
                         "✅ <b>Instagram Oturumu Başarıyla Güncellendi!</b>\n\n"
-                        f"• <b>Durum:</b> 🟢 Aktif\n"
+                        f"• <b>Canlı API Testi:</b> {durum_txt}\n"
                         f"• <b>Kayıt:</b> Kalıcı Depolama (<code>data/cookies.json</code>)\n"
                         "• <b>Etki:</b> Anında devrede (Coolify yeniden dağıtımına gerek yoktur).\n\n"
                         "🛡️ <i>Güvenliğiniz için çerezi içeren mesajınız sohbetten silinmiştir.</i>",
@@ -1903,13 +1909,16 @@ def handle_update(update):
                 )
             return
 
-        # /session_status veya /oturum: Aktif çerez durumunu gösterir
+        # /session_status veya /oturum: Aktif çerez durumunu ve canlı API testini gösterir
         if text.startswith("/session_status") or text.startswith("/oturum"):
-            status = session_manager.get_status()
+            status = session_manager.get_status(verify_live=True)
             ig = status["instagram"]
             tw = status["twitter"]
 
-            ig_status = f"🟢 Aktif (Maskeli: <code>{ig['masked']}</code>)" if ig["active"] else "🔴 Tanımsız / Süresi Dolmuş"
+            if ig.get("live_status"):
+                ig_status = f"{ig['live_status']} (Maskeli: <code>{ig['masked']}</code>)"
+            else:
+                ig_status = f"🟢 Aktif (Maskeli: <code>{ig['masked']}</code>)" if ig["active"] else "🔴 Tanımsız / Süresi Dolmuş"
             tw_status = f"🟢 Aktif (auth: <code>{tw['auth_token_masked']}</code>, ct0: <code>{tw['ct0_masked']}</code>)" if tw["active"] else "🔴 Tanımsız / Eksik"
 
             msg_txt = (

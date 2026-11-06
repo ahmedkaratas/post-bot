@@ -87,8 +87,35 @@ class SessionManager:
             self._save(data)
             return True
 
-    def get_status(self) -> dict:
-        """Oturum durumunu maskelenmiş olarak döner."""
+    def verify_instagram_session(self, session_id: str = None) -> tuple:
+        """Instagram sessionid değerini Instagram API'sine canlı sorgu atarak doğrular."""
+        import requests
+        sid = session_id or self.get_instagram_session_id()
+        if not sid:
+            return False, "Tanımsız / Eksik"
+        headers = {
+            "User-Agent": "Instagram 300.0.0.18.110 (iPhone14,3; iOS 16_6; en_US; en-US; scale=3.00; 1170x2532; 513072223) AppleWebKit/420+",
+            "Cookie": f"sessionid={sid};",
+            "X-IG-App-ID": "936619743392459"
+        }
+        try:
+            resp = requests.post(
+                "https://i.instagram.com/api/v1/clips/discover/",
+                headers=headers,
+                data={"container_module": "clips_viewer_clips_netego"},
+                timeout=8
+            )
+            if resp.status_code == 200:
+                return True, "🟢 Geçerli & Aktif (HTTP 200)"
+            elif resp.status_code == 403:
+                return False, "🔴 Süresi Dolmuş (HTTP 403)"
+            else:
+                return False, f"⚠️ HTTP {resp.status_code}"
+        except Exception as e:
+            return False, f"⚠️ Bağlantı hatası: {str(e)[:30]}"
+
+    def get_status(self, verify_live: bool = False) -> dict:
+        """Oturum durumunu maskelenmiş olarak döner. verify_live=True ise canlı API testi yapar."""
         ig_session = self.get_instagram_session_id()
         tw_auth, tw_ct0 = self.get_twitter_credentials()
         with self._lock:
@@ -101,9 +128,14 @@ class SessionManager:
                 return s[:2] + "****" + s[-2:]
             return s[:4] + "****" + s[-4:]
 
+        ig_live_msg = None
+        if verify_live and ig_session:
+            _, ig_live_msg = self.verify_instagram_session(ig_session)
+
         return {
             "instagram": {
                 "active": bool(ig_session),
+                "live_status": ig_live_msg,
                 "masked": mask(ig_session),
                 "source": "Kalıcı Dosya (data/cookies.json)" if data.get("instagram_session_id") else ("Environment Variable" if ig_session else "Yok"),
                 "updated_at": data.get("instagram_updated_at")
