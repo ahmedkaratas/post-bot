@@ -107,14 +107,14 @@ def process_ecommerce_photo(
     image_bytes,
     canvas_w=1500,
     canvas_h=2000,
-    margin=0.88,
+    margin=0.96,
     bg_color=(255, 255, 255)
 ):
     """
-    1. Removes background via PhotoRoom.
-    2. Crops transparent margins around the detected object.
-    3. Centers and scales the object onto a canvas (default 1500x2000 pure white).
-    4. Returns (white_jpg_io, cutout_png_io, orig_size, final_size).
+    1. PhotoRoom AI ile arka planı temizler.
+    2. Alfa kanalındaki mikroskobik pikselleri filtreleyerek nesnenin gerçek sınırlarını kırpar.
+    3. Nesneyi tuvali en yüksek oranda dolduracak şekilde (%96+ doluluk) orantılı büyütüp ortalar.
+    4. (white_jpg_io, cutout_png_io, orig_size, final_size) döner.
     """
     # 1. PhotoRoom'dan şeffaf dekupe PNG'yi al
     cutout_bytes = remove_background(image_bytes)
@@ -124,12 +124,13 @@ def process_ecommerce_photo(
         cutout = ImageOps.exif_transpose(raw_cutout).convert("RGBA")
         orig_w, orig_h = cutout.size
 
-        # Nesnenin sınırlarını (bounding box) bul ve boş şeffaf kenarları kırp
-        bbox = cutout.getbbox()
-        if bbox:
-            cutout = cutout.crop(bbox)
+        # Nesnenin gerçek sınırlarını bul (mikroskobik alfa gürültülerini filtrele: alpha > 15)
+        alpha = cutout.split()[-1]
+        real_bbox = alpha.point(lambda p: 255 if p > 15 else 0).getbbox()
+        if real_bbox:
+            cutout = cutout.crop(real_bbox)
 
-        # 3. 1500x2000 tuvale sığacak şekilde orantılı ölçekle
+        # 3. Tuvale tam oturacak şekilde büyüt (%96 - %100 doluluk)
         target_max_w = int(canvas_w * margin)
         target_max_h = int(canvas_h * margin)
 
@@ -148,14 +149,15 @@ def process_ecommerce_photo(
 
         canvas.paste(resized_cutout, (paste_x, paste_y), resized_cutout)
 
-        # 5. JPEG (Beyaz zemin 1500x2000) hazırla
+        # 5. JPEG (Beyaz zemin) hazırla
         white_jpg_io = io.BytesIO()
         rgb_canvas = canvas.convert("RGB")
         rgb_canvas.save(white_jpg_io, format="JPEG", quality=95, optimize=True)
         white_jpg_io.seek(0)
 
-        # 6. Şeffaf PNG kopyasını da hazırla
-        cutout_png_io = io.BytesIO(cutout_bytes)
+        # 6. Şeffaf PNG kopyasını da hazırla (Kırpılmış temiz nesne)
+        cutout_png_io = io.BytesIO()
+        cutout.save(cutout_png_io, format="PNG", optimize=True)
         cutout_png_io.seek(0)
 
         return white_jpg_io, cutout_png_io, (orig_w, orig_h), (canvas_w, canvas_h)

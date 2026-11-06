@@ -1698,12 +1698,34 @@ def handle_dekupe_command(chat_id, msg_id, target_msg, opt_text="", message_thre
         # Görseli indir
         img_data = requests.get(download_url, timeout=30).content
 
-        # PhotoRoom ile işle: 1500x2000 Beyaz Zemin + Şeffaf Cutout
+        opt_lower = opt_text.lower()
+
+        # Tuval boyutu belirleme:
+        # /d kare -> 1500x1500 (Kare e-ticaret)
+        # /d yatay -> 2000x1500
+        # Varsayılan: 1500x2000 (Trendyol dikey)
+        canvas_w, canvas_h = 1500, 2000
+        canvas_desc = "1500 × 2000 px (Trendyol / E-Ticaret Dikey)"
+        if "kare" in opt_lower or "1:1" in opt_lower:
+            canvas_w, canvas_h = 1500, 1500
+            canvas_desc = "1500 × 1500 px (Kare Format)"
+        elif "yatay" in opt_lower:
+            canvas_w, canvas_h = 2000, 1500
+            canvas_desc = "2000 × 1500 px (Yatay Format)"
+
+        # Doluluk oranı: Varsayılan %96 (boşluksuz, devasa ve ortalanmış)
+        # /d full veya /d tasir -> %100 (kenarlara tam dayalı taşma modu)
+        margin = 0.96
+        if "full" in opt_lower or "tasir" in opt_lower or "taşır" in opt_lower:
+            margin = 1.00
+        elif "kucuk" in opt_lower or "küçük" in opt_lower:
+            margin = 0.85
+
+        # PhotoRoom ile işle: Yüksek doluluklu Beyaz Zemin + Şeffaf Cutout
         white_jpg_io, cutout_png_io, orig_size, final_size = photoroom_engine.process_ecommerce_photo(
-            img_data, canvas_w=1500, canvas_h=2000
+            img_data, canvas_w=canvas_w, canvas_h=canvas_h, margin=margin
         )
 
-        opt_lower = opt_text.lower()
         send_png_only = "png" in opt_lower or "seffaf" in opt_lower or "şeffaf" in opt_lower
         send_both = "hepsi" in opt_lower or "all" in opt_lower
 
@@ -1736,23 +1758,23 @@ def handle_dekupe_command(chat_id, msg_id, target_msg, opt_text="", message_thre
                 timeout=30
             )
 
-        # 2. Beyaz Zeminli 1500x2000 E-Ticaret JPEG (Varsayılan veya hepsi)
+        # 2. Beyaz Zeminli E-Ticaret JPEG (Varsayılan veya hepsi)
         if not send_png_only:
             white_caption = (
                 "🛍️ <b>Ürün Fotoğrafın Hazır!</b>\n"
-                f"📐 <b>Ölçü:</b> 1500 × 2000 px (Trendyol / E-Ticaret Formatı)\n"
-                "🎨 <b>Zemin:</b> Saf Beyaz (#FFFFFF) & Orantılı Merkezleme\n"
+                f"📐 <b>Ölçü:</b> {canvas_desc}\n"
+                "🎨 <b>Zemin:</b> Saf Beyaz (#FFFFFF) & Genişletilmiş Merkezleme\n"
                 f"🔍 <b>Orijinal:</b> {orig_size[0]}×{orig_size[1]} ➔ 🎯 <b>Tuval:</b> {final_size[0]}×{final_size[1]}\n"
                 "⚡ <b>Motor:</b> PhotoRoom AI Motoru\n"
                 "📁 <i>Kayıpsız HD Belge (Doğrudan Mağazaya Yüklemeye Hazır)</i>\n"
-                "💡 <i>İpucu: Şeffaf PNG için <code>/d png</code>, her ikisi için <code>/d hepsi</code> yazabilirsiniz.</i>"
+                "💡 <i>İpuçları: <code>/d kare</code> (1:1), <code>/d full</code> (tam taşma), <code>/d png</code> (şeffaf)</i>"
             )
             white_payload = dict(doc_payload)
             white_payload["caption"] = white_caption
             requests.post(
                 f"{API_URL}/sendDocument",
                 data=white_payload,
-                files={"document": (f"{base_name}_1500x2000.jpg", white_jpg_io.getvalue(), "image/jpeg")},
+                files={"document": (f"{base_name}_{canvas_w}x{canvas_h}.jpg", white_jpg_io.getvalue(), "image/jpeg")},
                 timeout=30
             )
 
