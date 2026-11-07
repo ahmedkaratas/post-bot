@@ -42,12 +42,56 @@ CANVAS_WIDTH = 1080
 CANVAS_HEIGHT = 1350
 TARGET_ASPECT = CANVAS_WIDTH / CANVAS_HEIGHT  # 0.8
 
+import uuid
+from datetime import datetime, timezone
+import backup_manager
+
+INSTANCE_ID = f"inst_{uuid.uuid4().hex[:8]}"
+BOT_START_TIME = time.time()
+CURRENT_BOOT_INFO = {"boot_id": "boot_init", "boot_count": 1, "is_wiped_or_first": False}
+CONFLICT_TRACKER = {
+    "detected": False,
+    "last_time": 0,
+    "count": 0,
+    "last_desc": ""
+}
+
+def is_definitive_telegram_error(err_str: str, status_code: int = None) -> bool:
+    """Telegram'dan dönen hatanın kesin bir istemci/format hatası olup olmadığını denetler."""
+    if status_code in (400, 403, 404):
+        return True
+    s = str(err_str).lower()
+    if any(k in s for k in [
+        "bad request",
+        "chat not found",
+        "wrong file identifier",
+        "file too large",
+        "entity_mention_invalid",
+        "can't parse entities",
+        "bot was blocked",
+        "user is deactivated"
+    ]):
+        return True
+    return False
+
 running = True
 
 def signal_handler(sig, frame):
     global running
-    print("\nBot durduruluyor...")
+    sig_name = "SIGTERM" if sig == signal.SIGTERM else "SIGINT"
+    print(f"\n{sig_name} alındı, bot kapatılıyor...")
     running = False
+    try:
+        print("📦 Son kapanış yedeği alınıyor...")
+        backup_manager.create_and_upload_backup(
+            API_URL,
+            INSTANCE_ID,
+            boot_id=CURRENT_BOOT_INFO.get("boot_id", ""),
+            is_sigterm=True,
+            force=False
+        )
+    except Exception as e:
+        print(f"Kapanış yedeği hatası: {e}")
     sys.exit(0)
 
 signal.signal(signal.SIGINT, signal_handler)
@@ -1214,10 +1258,11 @@ def deliver_ai_curated_tweet(chat_id, tweet_dict, ai_eval, thread_id=None, reply
         )
         send_message(chat_id, ai_header, reply_to_message_id=reply_to_id, message_thread_id=thread_id)
 
-        # Anons yapıldığı anda kalıcı olarak tekilleştirme motoruna kaydet (mükerrer gönderimi garantili engeller)
-        dedup_engine.mark_sent(tweet_id, url=tweet_url, author=resolved_handle, text=tweet_dict.get("text", ""))
+        # Anons yapıldığı anda kesin gönderildi (CONFIRMED) olarak kütükle
+        dedup_engine.confirm(tweet_id, url=tweet_url, author=resolved_handle, text=tweet_dict.get("text", ""))
         radar_store.mark_sent(f"ai_{tweet_id}", author=resolved_handle, likes=likes)
         radar_store.mark_sent(tweet_id, author=resolved_handle, likes=likes)
+        backup_manager.notify_data_changed(API_URL, INSTANCE_ID, boot_id=CURRENT_BOOT_INFO.get("boot_id", ""))
 
         # 6. Slaytları İlet
         album_caption = f"🤖 <b>AI Seçimli Albüm{post_tag} ({len(slides)} Slayt):</b>\n@{resolved_handle} • Skor: {score}/10"
@@ -1252,11 +1297,19 @@ def deliver_ai_curated_tweet(chat_id, tweet_dict, ai_eval, thread_id=None, reply
         send_message(chat_id, "----------------------------------------", message_thread_id=thread_id)
         return True, None
     except Exception as e:
-        # Eğer post_id atanmadıysa ve Telegram başlığı gönderilmediyse rezervasyonu serbest bırak
-        if post_id is None:
-            dedup_engine.release(tweet_dict.get("id"))
-            if tweet_dict.get("url"):
-                dedup_engine.release(tweet_dict.get("url"))
+        is_def = is_definitive_telegram_error(str(e))
+        dedup_engine.abort(
+            tweet_dict.get("id"),
+            url=tweet_dict.get("url"),
+            author=resolved_handle if 'resolved_handle' in locals() else "",
+            text=tweet_dict.get("text", ""),
+            is_definitive_error=is_def
+        )
+        if is_def and 'post_id' in locals() and post_id is not None:
+            try:
+                history_store.delete_post(post_id)
+            except Exception:
+                pass
         print(f"AI Tweet teslimat hatası: {e}")
         return False, str(e)
 
@@ -1314,9 +1367,10 @@ def deliver_high_repost_radar_single(chat_id, thread_id=None, reply_to_id=None):
         f"🔗 <b>Orijinal link:</b> {rp_url}"
     )
     send_message(chat_id, rp_header, reply_to_message_id=reply_to_id, message_thread_id=thread_id)
-    dedup_engine.mark_sent(rp_id, url=rp_url, author=rp_author, text=repost_tweet.get("text", ""))
+    dedup_engine.confirm(rp_id, url=rp_url, author=rp_author, text=repost_tweet.get("text", ""))
     radar_store.mark_sent(f"rp_{rp_id}", author=rp_author, likes=rp_likes)
     radar_store.mark_sent(rp_id, author=rp_author, likes=rp_likes)
+    backup_manager.notify_data_changed(API_URL, INSTANCE_ID, boot_id=CURRENT_BOOT_INFO.get("boot_id", ""))
 
     handle_ig_command(
         chat_id=chat_id,
@@ -1382,8 +1436,9 @@ def trigger_radar_delivery(chat_id, thread_id=None, reply_to_id=None):
                 f"🔗 <b>Orijinal link:</b> {tweet_url}"
             )
             send_message(chat_id, header_text, reply_to_message_id=reply_to_id, message_thread_id=thread_id)
-            dedup_engine.mark_sent(top_std_id, url=tweet_url, author=author, text=top_tweet.get("text", ""))
+            dedup_engine.confirm(top_std_id, url=tweet_url, author=author, text=top_tweet.get("text", ""))
             radar_store.mark_sent(top_std_id, author=author, likes=likes)
+            backup_manager.notify_data_changed(API_URL, INSTANCE_ID, boot_id=CURRENT_BOOT_INFO.get("boot_id", ""))
 
             handle_ig_command(
                 chat_id=chat_id,
@@ -1460,9 +1515,10 @@ def trigger_radar_delivery(chat_id, thread_id=None, reply_to_id=None):
                 f"🔗 <b>Orijinal link:</b> {rp_url}"
             )
             send_message(chat_id, rp_header, reply_to_message_id=reply_to_id, message_thread_id=thread_id)
-            dedup_engine.mark_sent(rp_id, url=rp_url, author=rp_author, text=repost_tweet.get("text", ""))
+            dedup_engine.confirm(rp_id, url=rp_url, author=rp_author, text=repost_tweet.get("text", ""))
             radar_store.mark_sent(f"rp_{rp_id}", author=rp_author, likes=rp_likes)
             radar_store.mark_sent(rp_id, author=rp_author, likes=rp_likes)
+            backup_manager.notify_data_changed(API_URL, INSTANCE_ID, boot_id=CURRENT_BOOT_INFO.get("boot_id", ""))
 
             handle_ig_command(
                 chat_id=chat_id,
@@ -1597,42 +1653,61 @@ def deliver_instagram_reel(chat_id, thread_id=None, reply_to_id=None):
             payload["message_thread_id"] = thread_id
 
         video_filename = f"ig_reel_{code}_{username}.mp4"
-        resp = requests.post(
-            f"{API_URL}/sendVideo",
-            data=payload,
-            files={"video": (video_filename, video_bytes, "video/mp4")},
-            timeout=90
-        )
+        resp = None
+        try:
+            resp = requests.post(
+                f"{API_URL}/sendVideo",
+                data=payload,
+                files={"video": (video_filename, video_bytes, "video/mp4")},
+                timeout=90
+            )
+        except (requests.exceptions.Timeout, requests.exceptions.ConnectionError) as net_err:
+            print(f"⚠️ Reels gönderme zaman aşımı/bağlantı hatası: {net_err}")
+            # Telegram videoyu yayınlamış olabilir; kilidi KORU, post_history'den silme!
+            dedup_engine.abort(code, url=reel_url, author=username, text=caption_raw, is_definitive_error=False)
+            return False, f"Telegram video gönderme zaman aşımı (90s): {net_err}"
 
-        if resp.status_code == 200:
-            dedup_engine.mark_sent(code, url=reel_url, author=username, text=caption_raw)
+        if resp and resp.status_code == 200:
+            dedup_engine.confirm(code, url=reel_url, author=username, text=caption_raw)
             reels_store.mark_sent(code, username=username, plays=plays, likes=likes)
             reels_store.mark_sent(f"ig_{code}", username=username, plays=plays, likes=likes)
+            backup_manager.notify_data_changed(API_URL, INSTANCE_ID, boot_id=CURRENT_BOOT_INFO.get("boot_id", ""))
             return True, None
         else:
-            if "can't parse entities" in resp.text:
+            if resp and "can't parse entities" in resp.text:
                 payload.pop("parse_mode", None)
                 payload["caption"] = f"🎬 [Instagram] Viral Reels: @{username}\nİzlenme: {plays:,}\nBeğeni: {likes:,}\n{reel_url}"
-                resp2 = requests.post(f"{API_URL}/sendVideo", data=payload, files={"video": (video_filename, video_bytes, "video/mp4")}, timeout=90)
-                if resp2.status_code == 200:
-                    dedup_engine.mark_sent(code, url=reel_url, author=username, text=caption_raw)
-                    reels_store.mark_sent(code, username=username, plays=plays, likes=likes)
-                    return True, None
-            if post_id:
+                try:
+                    resp2 = requests.post(f"{API_URL}/sendVideo", data=payload, files={"video": (video_filename, video_bytes, "video/mp4")}, timeout=90)
+                    if resp2.status_code == 200:
+                        dedup_engine.confirm(code, url=reel_url, author=username, text=caption_raw)
+                        reels_store.mark_sent(code, username=username, plays=plays, likes=likes)
+                        backup_manager.notify_data_changed(API_URL, INSTANCE_ID, boot_id=CURRENT_BOOT_INFO.get("boot_id", ""))
+                        return True, None
+                except Exception:
+                    pass
+
+            is_def = is_definitive_telegram_error(resp.text if resp else "", resp.status_code if resp else None)
+            dedup_engine.abort(code, url=reel_url, author=username, text=caption_raw, is_definitive_error=is_def)
+            if is_def and post_id:
                 try:
                     history_store.delete_post(post_id)
                 except Exception:
                     pass
-            dedup_engine.release(code)
-            dedup_engine.release(reel_url)
-            return False, f"Telegram video gönderme hatası: {resp.text[:100]}"
+            err_msg = resp.text[:100] if resp else "Bilinmeyen hata"
+            return False, f"Telegram video gönderme hatası: {err_msg}"
     except Exception as e:
-        if 'post_id' in locals() and post_id:
+        is_def = is_definitive_telegram_error(str(e))
+        c_code = top_reel.get("code") if 'top_reel' in locals() and top_reel else None
+        c_url = top_reel.get("url") if 'top_reel' in locals() and top_reel else None
+        c_auth = top_reel.get("username", "") if 'top_reel' in locals() and top_reel else ""
+        c_text = top_reel.get("caption", "") if 'top_reel' in locals() and top_reel else ""
+        dedup_engine.abort(c_code, url=c_url, author=c_auth, text=c_text, is_definitive_error=is_def)
+        if is_def and 'post_id' in locals() and post_id:
             try:
                 history_store.delete_post(post_id)
             except Exception:
                 pass
-        dedup_engine.release(top_reel.get("code") if 'top_reel' in locals() and top_reel else None)
         return False, str(e)
 
 def deliver_twitter_video(chat_id, thread_id=None, reply_to_id=None):
@@ -1708,42 +1783,61 @@ def deliver_twitter_video(chat_id, thread_id=None, reply_to_id=None):
             payload["message_thread_id"] = thread_id
 
         video_filename = f"x_video_{tweet_id}_{author}.mp4"
-        resp = requests.post(
-            f"{API_URL}/sendVideo",
-            data=payload,
-            files={"video": (video_filename, video_bytes, "video/mp4")},
-            timeout=90
-        )
+        resp = None
+        try:
+            resp = requests.post(
+                f"{API_URL}/sendVideo",
+                data=payload,
+                files={"video": (video_filename, video_bytes, "video/mp4")},
+                timeout=90
+            )
+        except (requests.exceptions.Timeout, requests.exceptions.ConnectionError) as net_err:
+            print(f"⚠️ Twitter video gönderme zaman aşımı/bağlantı hatası: {net_err}")
+            # Telegram videoyu yayınlamış olabilir; kilidi KORU, post_history'den silme!
+            dedup_engine.abort(tweet_id, url=tweet_url, author=author, text=text_raw, is_definitive_error=False)
+            return False, f"Telegram video gönderme zaman aşımı (90s): {net_err}"
 
-        if resp.status_code == 200:
-            dedup_engine.mark_sent(tweet_id, url=tweet_url, author=author, text=text_raw)
+        if resp and resp.status_code == 200:
+            dedup_engine.confirm(tweet_id, url=tweet_url, author=author, text=text_raw)
             reels_store.mark_sent(f"x_{tweet_id}", username=author, plays=views, likes=likes)
             reels_store.mark_sent(tweet_id, username=author, plays=views, likes=likes)
+            backup_manager.notify_data_changed(API_URL, INSTANCE_ID, boot_id=CURRENT_BOOT_INFO.get("boot_id", ""))
             return True, None
         else:
-            if "can't parse entities" in resp.text:
+            if resp and "can't parse entities" in resp.text:
                 payload.pop("parse_mode", None)
                 payload["caption"] = f"🐦 [Twitter/X] Viral Video: @{author}\nBeğeni: {likes:,}\n{tweet_url}"
-                resp2 = requests.post(f"{API_URL}/sendVideo", data=payload, files={"video": (video_filename, video_bytes, "video/mp4")}, timeout=90)
-                if resp2.status_code == 200:
-                    dedup_engine.mark_sent(tweet_id, url=tweet_url, author=author, text=text_raw)
-                    reels_store.mark_sent(f"x_{tweet_id}", username=author, plays=views, likes=likes)
-                    return True, None
-            if post_id:
+                try:
+                    resp2 = requests.post(f"{API_URL}/sendVideo", data=payload, files={"video": (video_filename, video_bytes, "video/mp4")}, timeout=90)
+                    if resp2.status_code == 200:
+                        dedup_engine.confirm(tweet_id, url=tweet_url, author=author, text=text_raw)
+                        reels_store.mark_sent(f"x_{tweet_id}", username=author, plays=views, likes=likes)
+                        backup_manager.notify_data_changed(API_URL, INSTANCE_ID, boot_id=CURRENT_BOOT_INFO.get("boot_id", ""))
+                        return True, None
+                except Exception:
+                    pass
+
+            is_def = is_definitive_telegram_error(resp.text if resp else "", resp.status_code if resp else None)
+            dedup_engine.abort(tweet_id, url=tweet_url, author=author, text=text_raw, is_definitive_error=is_def)
+            if is_def and post_id:
                 try:
                     history_store.delete_post(post_id)
                 except Exception:
                     pass
-            dedup_engine.release(tweet_id)
-            dedup_engine.release(tweet_url)
-            return False, f"Telegram video gönderme hatası: {resp.text[:100]}"
+            err_msg = resp.text[:100] if resp else "Bilinmeyen hata"
+            return False, f"Telegram video gönderme hatası: {err_msg}"
     except Exception as e:
-        if 'post_id' in locals() and post_id:
+        is_def = is_definitive_telegram_error(str(e))
+        v_id = top_video.get("id") if 'top_video' in locals() and top_video else None
+        v_url = top_video.get("url") if 'top_video' in locals() and top_video else None
+        v_auth = top_video.get("author", "") if 'top_video' in locals() and top_video else ""
+        v_text = top_video.get("text", "") if 'top_video' in locals() and top_video else ""
+        dedup_engine.abort(v_id, url=v_url, author=v_auth, text=v_text, is_definitive_error=is_def)
+        if is_def and 'post_id' in locals() and post_id:
             try:
                 history_store.delete_post(post_id)
             except Exception:
                 pass
-        dedup_engine.release(top_video.get("id") if 'top_video' in locals() and top_video else None)
         return False, str(e)
 
 def trigger_reels_delivery(chat_id, thread_id=None, reply_to_id=None):
@@ -1957,6 +2051,10 @@ def handle_update(update):
     chat_type = message.get("chat", {}).get("type", "private")
     is_group = chat_type in ("group", "supergroup", "channel")
 
+    # Bota DM atan kullanıcıyı otomatik admin hedefi olarak tanı
+    if not is_group:
+        backup_manager.set_admin_chat_id(chat_id)
+
     # Otomatik hedef koruma: Konteyner yeniden başladığında radar hedefleri varsayılana dönmüşse,
     # gruptan atılan ilk komutla aktif odayı ve konuyu otomatik olarak radara bağla
     if is_group:
@@ -2141,6 +2239,116 @@ def handle_update(update):
                 "<i>Not: Güncellemeler Coolify veya GitHub gerektirmeden anında aktif olur.</i>"
             )
             send_message(chat_id, msg_txt, reply_to_message_id=msg_id, message_thread_id=thread_id)
+            return
+
+        # /durum veya /status: Detaylı bot, kalıcı hafıza, instance, ledger ve yedek durum raporu
+        if text.startswith("/durum") or text.startswith("/status"):
+            if not is_group:
+                backup_manager.set_admin_chat_id(chat_id)
+
+            uptime_sec = int(time.time() - BOT_START_TIME)
+            hours, rem = divmod(uptime_sec, 3600)
+            minutes, seconds = divmod(rem, 60)
+            uptime_str = f"{hours} saat {minutes} dk" if hours > 0 else f"{minutes} dk {seconds} sn"
+
+            boot_count = CURRENT_BOOT_INFO.get("boot_count", 1)
+            boot_id = CURRENT_BOOT_INFO.get("boot_id", "bilinmiyor")
+
+            ledger_lines = backup_manager._count_ledger_lines()
+            post_count = backup_manager._count_history_posts()
+
+            mount_info = backup_manager.get_storage_mount_info()
+            if mount_info["is_separate"]:
+                storage_str = f"🟢 Ayrı Volume Bağlı (st_dev: {mount_info['data_dev']} != {mount_info['parent_dev']})"
+            else:
+                storage_str = f"⚠️ Kök Dizinle Aynı Aygıtta (st_dev: {mount_info['data_dev']}) - Kalıcı volume bağlı olmayabilir"
+
+            boot_log_survived = not CURRENT_BOOT_INFO.get("is_wiped_or_first", False)
+            boot_status_str = "🟢 Korundu (Önceki kayıtlar mevcut)" if boot_log_survived else "⚠️ Yeni Boot / Sıfır Kayıt"
+
+            backup_chat = backup_manager.get_backup_chat_id() or "Tanımsız (Kanalda /yedek_ata yazın)"
+            meta = backup_manager.get_backup_meta()
+            last_bk_time = meta.get("last_backup_time")
+            last_manifest = meta.get("last_manifest") or {}
+            if last_bk_time:
+                bk_diff = int(time.time() - last_bk_time) // 60
+                bk_time_str = f"{bk_diff} dakika önce" if bk_diff > 0 else "Az önce"
+                bk_info_str = f"🟢 Aktif (Msg #{meta.get('last_msg_id')}, {bk_time_str}, Ledger: {last_manifest.get('ledger_lines', 0)})"
+            else:
+                bk_info_str = "⚪ Henüz yedek alınmadı"
+
+            # Son 5 gönderilen post
+            recent_posts = history_store.get_recent_posts(limit=5)
+            recent_lines = []
+            for rp in recent_posts:
+                pid = rp.get("id")
+                stype = rp.get("source_type", "tweet")
+                auth = rp.get("author", "user")
+                c_time = rp.get("created_at", 0)
+                time_str = datetime.fromtimestamp(c_time, timezone.utc).strftime("%H:%M") if c_time else ""
+                recent_lines.append(f"• <b>#{pid}</b> [{stype}] @{auth} ({time_str} UTC)")
+            recent_block = "\n".join(recent_lines) if recent_lines else "• Henüz gönderi yok"
+
+            conflict_line = (
+                f"⚠️ <b>DİKKAT: Başka bir bot kopyası çalışıyor olabilir!</b>\n"
+                f"• 409 Conflict: {CONFLICT_TRACKER['count']} kez tespit edildi (Son: {CONFLICT_TRACKER['last_desc'][:50]})\n"
+                if CONFLICT_TRACKER["detected"] else
+                "🟢 <b>Bot Çakışması:</b> Yok (Tek instance devrede)"
+            )
+
+            durum_msg = (
+                "📊 <b>Bot Durumu & Sağlık Raporu</b>\n\n"
+                f"🆔 <b>Instance ID:</b> <code>{INSTANCE_ID}</code>\n"
+                f"🔢 <b>Boot Sayısı:</b> #{boot_count} (<code>{boot_id}</code>)\n"
+                f"⏱️ <b>Çalışma Süresi:</b> {uptime_str}\n\n"
+                f"💾 <b>Kalıcı Depolama (/app/data):</b>\n"
+                f"• Volume Durumu: {storage_str}\n"
+                f"• .boot_log Durumu: {boot_status_str}\n\n"
+                f"📁 <b>Veri Boyutları:</b>\n"
+                f"• sent_ledger.txt: <b>{ledger_lines}</b> kayıt\n"
+                f"• post_history.json: <b>{post_count}</b> post\n\n"
+                f"☁️ <b>Telegram Veri Yedeği (Sorun 4):</b>\n"
+                f"• Hedef Kanal: <code>{backup_chat}</code>\n"
+                f"• Son Yedek: {bk_info_str}\n\n"
+                f"{conflict_line}\n\n"
+                f"📜 <b>Son 5 Gönderilen İçerik:</b>\n"
+                f"{recent_block}"
+            )
+            send_message(chat_id, durum_msg, reply_to_message_id=msg_id, message_thread_id=thread_id)
+            return
+
+        # /yedek_ata: Bulunulan özel Telegram kanalını veri yedeği hedefi olarak kaydeder
+        if text.startswith("/yedek_ata"):
+            ok = backup_manager.set_backup_chat_id(chat_id)
+            if ok:
+                send_message(
+                    chat_id,
+                    f"✅ <b>Yedek hedefi ayarlandı.</b>\n"
+                    f"Chat ID: <code>{chat_id}</code>\n\n"
+                    f"⚠️ <i>Bu ID'yi kodda <code>BACKUP_CHAT_ID_DEFAULT</code> olarak sabitleyin, yoksa veri silinirse yedeği bulamam.</i>\n\n"
+                    f"📦 <i>İlk yedek arşivlenip sabitleniyor (pin)...</i>",
+                    reply_to_message_id=msg_id,
+                    message_thread_id=thread_id
+                )
+                threading.Thread(
+                    target=backup_manager.create_and_upload_backup,
+                    args=(API_URL, INSTANCE_ID, CURRENT_BOOT_INFO.get("boot_id", "")),
+                    kwargs={"force": True},
+                    daemon=True
+                ).start()
+            else:
+                send_message(chat_id, "❌ Yedek hedefi kaydedilemedi.", reply_to_message_id=msg_id, message_thread_id=thread_id)
+            return
+
+        # /yedek_al: Manuel anlık veri yedeği oluşturup Telegram'a yükler
+        if text.startswith("/yedek_al"):
+            send_message(chat_id, "📦 <b>Anlık veri yedeği oluşturuluyor ve yükleniyor...</b>", reply_to_message_id=msg_id, message_thread_id=thread_id)
+            threading.Thread(
+                target=backup_manager.create_and_upload_backup,
+                args=(API_URL, INSTANCE_ID, CURRENT_BOOT_INFO.get("boot_id", "")),
+                kwargs={"force": True},
+                daemon=True
+            ).start()
             return
 
         # /d veya /dekupe komutu: PhotoRoom arka plan silme + 1500x2000 beyaz tuval
@@ -2860,18 +3068,67 @@ def handle_update(update):
         send_message(chat_id, f"❌ Görsel işlenirken bir hata oluştu: {str(e)}", reply_to_message_id=msg_id, message_thread_id=thread_id)
 
 def main():
+    global CURRENT_BOOT_INFO
     print("=" * 55)
     print("🤖 Instagram Post Telegram Botu Başlatıldı!")
     print(f"🔗 Bot Kullanıcı Adı: @denemekick_bot")
+    print(f"🆔 Instance Kimliği: {INSTANCE_ID}")
     print("=" * 55)
 
-    # Koyeb / Cloud platformları için hafif healthcheck sunucusunu başlat
+    # 1. Boot kaydı oluştur
+    CURRENT_BOOT_INFO = backup_manager.record_boot(INSTANCE_ID)
+    boot_count = CURRENT_BOOT_INFO.get("boot_count", 1)
+    is_wiped = CURRENT_BOOT_INFO.get("is_wiped_or_first", False)
+
+    # 2. Telegram Yedeğinden Geri Yükleme (Zamanlayıcılardan ÖNCE)
+    print("🔄 Telegram veri yedeği denetleniyor...")
+    restore_res = backup_manager.restore_from_telegram_if_needed(
+        API_URL,
+        INSTANCE_ID,
+        boot_id=CURRENT_BOOT_INFO.get("boot_id", "")
+    )
+    dedup_engine.reload()
+
+    # 3. Veri durumu tespiti ve Admin Bildirimi
+    if restore_res.get("restored"):
+        veri_durumu = f"Geri yüklendi ({restore_res.get('status')})"
+    elif not is_wiped:
+        veri_durumu = "Mevcut (Kalıcı disk korundu)"
+    else:
+        veri_durumu = "Sıfır / İlk Kurulum"
+        # Önceki kayıt yok ve yedek de çekilemediyse: VERİ SIFIRLANDI UYARISI
+        print("🚨 [UYARI] VERİ SIFIRLANDI: Önceki .boot_log kaydı bulunamadı ve Telegram yedeği alınamadı!")
+        backup_manager.notify_admin(
+            API_URL,
+            f"🚨 <b>DİKKAT: BOT VERİLERİ SIFIRLANDI!</b>\n\n"
+            f"• <b>Instance:</b> <code>{INSTANCE_ID}</code>\n"
+            f"• Önceki boot kaydı bulunamadı ve Telegram yedeği yüklenemedi.\n"
+            f"• Kalıcı depolama (/app/data volume) ayarlarını veya yedek kanalını kontrol edin."
+        )
+
+    ledger_cnt = backup_manager._count_ledger_lines()
+    startup_dm = (
+        f"🤖 <b>Bot başladı</b> (Instance: <code>{INSTANCE_ID}</code>)\n"
+        f"• <b>Veri:</b> {veri_durumu}\n"
+        f"• <b>Ledger:</b> {ledger_cnt} kayıt\n"
+        f"• <b>Boot Sayısı:</b> #{boot_count}"
+    )
+    backup_manager.notify_admin(API_URL, startup_dm)
+
+    # 4. 30 dakikalık periyodik veri yedekleme döngüsünü başlat
+    threading.Thread(
+        target=backup_manager.run_periodic_backup_loop,
+        args=(API_URL, INSTANCE_ID, CURRENT_BOOT_INFO.get("boot_id", "")),
+        daemon=True
+    ).start()
+
+    # 5. Koyeb / Cloud platformları için hafif healthcheck sunucusunu başlat
     threading.Thread(target=run_health_server, daemon=True).start()
 
-    # 30 dakikalık periyodik Viral Tweet Radarı zamanlayıcısını başlat
+    # 6. 30 dakikalık periyodik Viral Tweet Radarı zamanlayıcısını başlat
     threading.Thread(target=run_radar_scheduler, daemon=True).start()
 
-    # 30 dakikalık periyodik Viral Reels Radarı zamanlayıcısını başlat
+    # 7. 30 dakikalık periyodik Viral Reels Radarı zamanlayıcısını başlat
     threading.Thread(target=run_reels_scheduler, daemon=True).start()
 
     print("Mesajlar dinleniyor (Çıkış için Ctrl+C)...")
@@ -2893,7 +3150,17 @@ def main():
                     offset = update["update_id"] + 1
                     handle_update(update)
             else:
-                time.sleep(1)
+                err_code = resp.get("error_code")
+                desc = resp.get("description", "")
+                if err_code == 409 or "conflict" in desc.lower():
+                    CONFLICT_TRACKER["detected"] = True
+                    CONFLICT_TRACKER["last_time"] = int(time.time())
+                    CONFLICT_TRACKER["count"] += 1
+                    CONFLICT_TRACKER["last_desc"] = desc
+                    print(f"⚠️ [ÇAKIŞMA] Telegram 409 Conflict: Başka bir bot kopyası devrede! ({desc})")
+                    time.sleep(5)
+                else:
+                    time.sleep(1)
         except requests.exceptions.RequestException:
             time.sleep(2)
         except Exception as e:

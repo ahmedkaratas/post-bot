@@ -28,18 +28,25 @@ def _clean_cookie_val(val: str, prefix: str = "") -> str:
                 val = m.group(1).strip().strip('"\'')
     return val.strip()
 
-def is_persistent_storage_mounted() -> bool:
-    """Docker konteyneri içinde /app/data dizininin kalıcı bir volume ile bağlı olup olmadığını kontrol eder."""
+def is_storage_mount_separate() -> bool:
+    """os.stat st_dev karşılaştırması ile data dizininin ayrı bir mount/volume olup olmadığını denetler."""
     try:
-        if os.path.exists("/proc/mounts"):
-            with open("/proc/mounts", "r") as f:
-                for line in f:
-                    parts = line.split()
-                    if len(parts) >= 2 and (parts[1] == "/app/data" or parts[1].endswith("/data")):
-                        return True
-        return os.path.ismount(DATA_DIR)
+        data_stat = os.stat(DATA_DIR)
+        parent_stat = os.stat(os.path.dirname(DATA_DIR) or "/")
+        return data_stat.st_dev != parent_stat.st_dev
     except Exception:
         return False
+
+def is_persistent_storage_mounted() -> bool:
+    """
+    Kalıcı depolama kontrolü:
+    1. os.stat st_dev karşılaştırması (ayrı cihaz mı?)
+    2. .boot_log'un korunmuş olması (yeniden başlatmalarda hayatta kaldı mı?)
+    """
+    separate = is_storage_mount_separate()
+    boot_log_file = os.path.join(DATA_DIR, ".boot_log")
+    survived = os.path.exists(boot_log_file) and os.path.getsize(boot_log_file) > 0
+    return separate or survived
 
 class SessionManager:
     def __init__(self, file_path=COOKIES_FILE):

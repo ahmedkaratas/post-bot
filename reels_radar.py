@@ -156,9 +156,10 @@ def find_top_new_viral_reel(min_plays=50000, min_likes=2000, max_age_hours=96):
         code = str(reel.get("code", "")).strip()
         url = reel.get("url", f"https://www.instagram.com/reel/{code}/")
         caption = reel.get("caption", "")
+        username = reel.get("username", "")
 
-        # 5 katmanlı tekilleştirme motoru ile kontrol et
-        if dedup_engine.is_sent(code, url=url, text=caption):
+        # 5 katmanlı tekilleştirme motoru ile kontrol et (ID, URL ve Yazar+Metin İmzası)
+        if dedup_engine.is_sent(code, url=url, text=caption, author=username):
             continue
 
         # Tarih kontrolü (Çok eski değilse)
@@ -178,9 +179,12 @@ def find_top_new_viral_reel(min_plays=50000, min_likes=2000, max_age_hours=96):
 
     if qualified:
         chosen = qualified[0]
-        dedup_engine.reserve(chosen.get("code"))
-        if chosen.get("url"):
-            dedup_engine.reserve(chosen.get("url"))
+        dedup_engine.claim(
+            chosen.get("code"),
+            url=chosen.get("url"),
+            author=chosen.get("username", ""),
+            text=chosen.get("caption", "")
+        )
         return chosen, len(qualified), None
 
     return None, 0, "Kriterlere ve dikey Reels formatına uyan yeni bir viral Reels bulunamadı."

@@ -2,12 +2,8 @@
 """
 Merkezi Tekilleştirme Motoru (DedupEngine)
 Tüm radar, video, reels ve AI tweet içeriklerinin mükerrer (aynı) gönderilmesini engeller.
-5 katmanlı savunma hattı:
-1. Anlık uçuş kilidi (_in_flight_set): Aynı anda taranıp indirilen videoların çakışmasını engeller.
-2. Append-Only Kalıcı Kütük (data/sent_ledger.txt): Disk yarışlarından (race condition) etkilenmeyen kalıcı kayıt.
-3. ReelsStore (data/reels_radar_data.json): Instagram ve X video kodları.
-4. RadarStore (data/radar_data.json): Tweet ID'leri.
-5. HistoryStore (data/post_history.json): Botun şimdiye kadar attığı tüm postların URL ve metin geçmişi.
+Claim / Confirm / Abort yaşam döngüsü ile ağ zaman aşımlarında içeriğin mükerrer seçilmesini önler.
+Ayrıca başlık + yazar normalizasyonu (25 karakter eşiği) ile aynı içerik farklı ID ile gelse dahi yakalar.
 """
 
 import os
@@ -23,6 +19,34 @@ def normalize_url(url: str) -> str:
     u = re.sub(r"^http://", "https://", u)
     u = u.split("?")[0].rstrip("/")
     return u
+
+def normalize_author(author: str) -> str:
+    if not author:
+        return ""
+    a = str(author).strip().lower().lstrip("@")
+    return re.sub(r"[^a-z0-9_]", "", a)
+
+def normalize_text_content(text: str) -> str:
+    if not text:
+        return ""
+    t = str(text).lower()
+    # Linkleri temizle
+    t = re.sub(r"https?://\S+", " ", t)
+    # Mention'ları (@kullanici) temizle
+    t = re.sub(r"@\w+", " ", t)
+    # Noktalama ve özel karakterleri boşluğa çevir
+    t = re.sub(r"[^\w\s]", " ", t)
+    # Boşlukları normalize et
+    t = re.sub(r"\s+", " ", t).strip()
+    return t
+
+def get_text_signature(author: str, text: str) -> str:
+    """Yazar ve metin için tekilleştirme imzası üretir (eşik: 25 karakter)."""
+    clean_t = normalize_text_content(text)
+    if len(clean_t) < 25:
+        return ""
+    clean_a = normalize_author(author)
+    return f"sig:{clean_a}:{clean_t[:100]}"
 
 DATA_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
 LEDGER_FILE = os.path.join(DATA_DIR, "sent_ledger.txt")
@@ -52,6 +76,11 @@ class DedupEngine:
             print(f"Kütük okuma hatası: {e}")
             return set()
 
+    def reload(self):
+        """Kütüğü diskten yeniden yükler."""
+        with self._lock:
+            self._cached_ledger = self._load_ledger()
+
     def _sync_from_existing_stores(self):
         """Mevcut post_history, radar ve reels verilerindeki tüm eski ID'leri kütüğe aktarır."""
         with self._lock:
@@ -65,21 +94,25 @@ class DedupEngine:
                         posts = data.get("posts", {})
                         for p in posts.values():
                             link = p.get("link", "")
+                            author = p.get("author", "")
+                            text = p.get("text", "")
                             if link:
                                 self._cached_ledger.add(link)
-                                # Tweet ID ayıkla
                                 m = re.search(r"/status/(\d+)", link)
                                 if m:
                                     tid = m.group(1)
                                     self._cached_ledger.add(tid)
                                     self._cached_ledger.add(f"x_{tid}")
                                     self._cached_ledger.add(f"ai_{tid}")
-                                # Reels code ayıkla
                                 r_m = re.search(r"/(?:reel|reels)/([a-zA-Z0-9_-]+)", link)
                                 if r_m:
                                     rcode = r_m.group(1)
                                     self._cached_ledger.add(rcode)
                                     self._cached_ledger.add(f"ig_{rcode}")
+                            if author and text:
+                                sig = get_text_signature(author, text)
+                                if sig:
+                                    self._cached_ledger.add(sig)
             except Exception as e:
                 print(f"Post history kütük eşleme hatası: {e}")
 
@@ -138,31 +171,14 @@ class DedupEngine:
             except Exception as e:
                 print(f"Kütük ekleme hatası: {e}")
 
-    def reserve(self, identifier: str) -> bool:
-        """İçerik indirilip gönderilene kadar geçici uçuş kilidi koyar."""
-        if not identifier:
-            return False
+    def get_ledger_count(self) -> int:
         with self._lock:
-            clean_id = str(identifier).strip()
-            if self.is_sent(clean_id):
-                return False
-            if clean_id in self._in_flight:
-                return False
-            self._in_flight.add(clean_id)
-            return True
+            return len(self._cached_ledger)
 
-    def release(self, identifier: str):
-        """Gönderim başarısız olursa uçuş kilidini kaldırır."""
-        if not identifier:
-            return
-        with self._lock:
-            clean_id = str(identifier).strip()
-            self._in_flight.discard(clean_id)
-
-    def is_sent(self, identifier: str = "", url: str = None, text: str = None) -> bool:
+    def is_sent(self, identifier: str = "", url: str = None, text: str = None, author: str = "") -> bool:
         """
-        Herhangi bir tweet ID, reel kodu, URL veya metnin daha önce gönderilip
-        gönderilmediğini tüm katmanlarda kontrol eder.
+        Herhangi bir tweet ID, reel kodu, URL, metin veya yazar imzasının
+        daha önce gönderilip gönderilmediğini veya şu an işlenip işlenmediğini denetler.
         """
         if not identifier and not url and not text:
             return False
@@ -186,28 +202,36 @@ class DedupEngine:
         elif clean_id and not clean_id.isdigit() and not clean_id.startswith("http"):
             reel_code = clean_id
 
-        with self._lock:
-            # 1. Katman: Uçuş Kilidi (Şu anda başka bir thread tarafından işleniyor mu?)
-            if clean_id and clean_id in self._in_flight:
-                return True
-            if clean_url and clean_url in self._in_flight:
-                return True
-            if status_id and (status_id in self._in_flight or f"x_{status_id}" in self._in_flight or f"ai_{status_id}" in self._in_flight):
-                return True
-            if reel_code and (reel_code in self._in_flight or f"ig_{reel_code}" in self._in_flight):
-                return True
+        text_sig = get_text_signature(author, text) if (author and text) else ""
 
-            # 2. Katman: Kalıcı Kütük (sent_ledger.txt)
-            for cand in [clean_id, f"x_{clean_id}", f"ig_{clean_id}", f"ai_{clean_id}"]:
-                if cand and cand in self._cached_ledger:
+        with self._lock:
+            # 1. Katman: Uçuş Kilidi (In-Flight)
+            cands_to_check = [clean_id, clean_url, status_id, reel_code, text_sig]
+            for cand in cands_to_check:
+                if cand and cand in self._in_flight:
+                    return True
+                if cand and f"CLAIM:{cand}" in self._in_flight:
                     return True
 
-            if clean_url and clean_url in self._cached_ledger:
+            if status_id and (f"x_{status_id}" in self._in_flight or f"ai_{status_id}" in self._in_flight):
+                return True
+            if reel_code and (f"ig_{reel_code}" in self._in_flight):
+                return True
+
+            # 2. Katman: Kalıcı Kütük (sent_ledger.txt) ve CLAIM kayıtları
+            for cand in [clean_id, f"x_{clean_id}", f"ig_{clean_id}", f"ai_{clean_id}", f"rp_{clean_id}"]:
+                if cand and (cand in self._cached_ledger or f"CLAIM:{cand}" in self._cached_ledger):
+                    return True
+
+            if clean_url and (clean_url in self._cached_ledger or f"CLAIM:{clean_url}" in self._cached_ledger):
+                return True
+
+            if text_sig and (text_sig in self._cached_ledger or f"CLAIM:{text_sig}" in self._cached_ledger):
                 return True
 
             if status_id:
-                for cand in [status_id, f"x_{status_id}", f"ai_{status_id}"]:
-                    if cand in self._cached_ledger:
+                for cand in [status_id, f"x_{status_id}", f"ai_{status_id}", f"rp_{status_id}"]:
+                    if cand in self._cached_ledger or f"CLAIM:{cand}" in self._cached_ledger:
                         return True
                 for entry in self._cached_ledger:
                     if entry.startswith("http") and f"/status/{status_id}" in entry:
@@ -215,19 +239,13 @@ class DedupEngine:
 
             if reel_code:
                 for cand in [reel_code, f"ig_{reel_code}"]:
-                    if cand in self._cached_ledger:
+                    if cand in self._cached_ledger or f"CLAIM:{cand}" in self._cached_ledger:
                         return True
                 for entry in self._cached_ledger:
                     if entry.startswith("http") and (f"/reel/{reel_code}" in entry or f"/reels/{reel_code}" in entry):
                         return True
 
-            # 3. Katman: URL ve ID eşleşmeleri
-            if clean_id:
-                for entry in self._cached_ledger:
-                    if entry.startswith("http") and (f"/{clean_id}" in entry or f"={clean_id}" in entry):
-                        return True
-
-            # 4. Katman: HistoryStore üzerinden geçmiş post kontrolü
+            # 3. Katman: HistoryStore üzerinden geçmiş post kontrolü
             try:
                 from history_store import history_store
                 target_check_id = clean_id or status_id or reel_code
@@ -243,11 +261,13 @@ class DedupEngine:
                         self._append_to_ledger(clean_id)
                     if clean_url:
                         self._append_to_ledger(clean_url)
+                    if text_sig:
+                        self._append_to_ledger(text_sig)
                     return True
             except Exception as hs_err:
                 print(f"Dedup HistoryStore kontrol hatası: {hs_err}")
 
-            # 5. Katman: ReelsStore ve RadarStore kontrolü
+            # 4. Katman: ReelsStore ve RadarStore kontrolü
             try:
                 from reels_store import reels_store
                 for ct in [clean_id, reel_code, status_id]:
@@ -259,19 +279,90 @@ class DedupEngine:
             try:
                 from radar_store import radar_store
                 for ct in [clean_id, status_id]:
-                    if ct and (radar_store.is_sent(ct) or radar_store.is_sent(f"ai_{ct}") or radar_store.is_sent(f"x_{ct}")):
+                    if ct and (radar_store.is_sent(ct) or radar_store.is_sent(f"ai_{ct}") or radar_store.is_sent(f"x_{ct}") or radar_store.is_sent(f"rp_{ct}")):
                         return True
             except Exception:
                 pass
 
             return False
 
-    def mark_sent(self, identifier: str, url: str = None, author: str = "", text: str = ""):
-        """İçeriği kalıcı olarak gönderildi olarak işaretler."""
-        if not identifier and not url:
-            return
+    def claim(self, identifier: str, url: str = None, author: str = "", text: str = "") -> bool:
+        """
+        İçeriği göndermeden ÖNCE kalıcı olarak 'denendi' (CLAIM) diye kütüğe yazar.
+        Ağ zaman aşımı (timeout=90) veya bağlantı kopmasında bu kayıt silinmez!
+        """
+        if not identifier and not url and not text:
+            return False
+
+        with self._lock:
+            if self.is_sent(identifier=identifier, url=url, text=text, author=author):
+                return False
+
+            clean_id = str(identifier).strip() if identifier else ""
+            clean_url = normalize_url(str(url).strip()) if url else ""
+            text_sig = get_text_signature(author, text) if (author and text) else ""
+
+            # In-flight'a ekle
+            for item in [clean_id, clean_url, text_sig]:
+                if item:
+                    self._in_flight.add(item)
+                    self._in_flight.add(f"CLAIM:{item}")
+
+            # Kalıcı kütüğe CLAIM olarak yaz (disk garantisi)
+            if clean_id:
+                self._append_to_ledger(f"CLAIM:{clean_id}")
+            if clean_url:
+                self._append_to_ledger(f"CLAIM:{clean_url}")
+            if text_sig:
+                self._append_to_ledger(f"CLAIM:{text_sig}")
+
+            return True
+
+    def confirm(self, identifier: str, url: str = None, author: str = "", text: str = ""):
+        """İçerik başarıyla teslim edildiğinde kesin gönderildi (CONFIRMED) olarak kütükler."""
+        self.mark_sent(identifier=identifier, url=url, author=author, text=text)
+
+    def abort(self, identifier: str, url: str = None, author: str = "", text: str = "",
+              is_definitive_error: bool = False):
+        """
+        Gönderim net bir HTTP hatası (400 Bad Request vb.) verirse kilidi iptal eder.
+        ZAMAN AŞIMI VEYA BAĞLANTI KOPMASINDA is_definitive_error=False OLACAĞI İÇİN
+        KAYDI KORUR (mükerrer gönderimi garantili engeller).
+        """
         clean_id = str(identifier).strip() if identifier else ""
         clean_url = normalize_url(str(url).strip()) if url else ""
+        text_sig = get_text_signature(author, text) if (author and text) else ""
+
+        with self._lock:
+            if is_definitive_error:
+                # Net hata: Uçuş kilidini kaldır
+                for item in [clean_id, clean_url, text_sig]:
+                    if item:
+                        self._in_flight.discard(item)
+                        self._in_flight.discard(f"CLAIM:{item}")
+                        self._cached_ledger.discard(f"CLAIM:{item}")
+                print(f"ℹ️ [DedupEngine] Net hata nedeniyle kilit iptal edildi: {clean_id or clean_url}")
+            else:
+                # Belirsiz hata veya timeout: Kaydı KORU!
+                # Telegram videoyu/postu göndermiş olabilir, mükerrerliği önlemek için release YAPILMAZ!
+                print(f"🛡️ [DedupEngine] Zaman aşımı/belirsiz bağlantı hatası: Kilit KORUNDU ({clean_id or clean_url})")
+
+    def reserve(self, identifier: str) -> bool:
+        """Geriye dönük uyumluluk: claim() çağırır."""
+        return self.claim(identifier=identifier)
+
+    def release(self, identifier: str):
+        """Geriye dönük uyumluluk: Sadece net hata durumunda çağrılırsa iptal eder."""
+        self.abort(identifier=identifier, is_definitive_error=True)
+
+    def mark_sent(self, identifier: str, url: str = None, author: str = "", text: str = ""):
+        """İçeriği kalıcı olarak gönderildi olarak kütüğe yazar ve mağazaları senkronize eder."""
+        if not identifier and not url and not text:
+            return
+
+        clean_id = str(identifier).strip() if identifier else ""
+        clean_url = normalize_url(str(url).strip()) if url else ""
+        text_sig = get_text_signature(author, text) if (author and text) else ""
 
         status_id = None
         if clean_id.isdigit():
@@ -291,9 +382,10 @@ class DedupEngine:
 
         with self._lock:
             # Uçuş kilitlerini kaldır
-            for release_cand in [clean_id, clean_url, status_id, reel_code]:
+            for release_cand in [clean_id, clean_url, status_id, reel_code, text_sig]:
                 if release_cand:
                     self._in_flight.discard(release_cand)
+                    self._in_flight.discard(f"CLAIM:{release_cand}")
 
             # Kütüğe tüm varyantlarıyla ekle
             if clean_id:
@@ -315,6 +407,9 @@ class DedupEngine:
                 self._append_to_ledger(clean_url)
             if url and str(url).strip() != clean_url:
                 self._append_to_ledger(str(url).strip())
+
+            if text_sig:
+                self._append_to_ledger(text_sig)
 
             # Store'lara da yaz
             try:

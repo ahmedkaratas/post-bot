@@ -115,7 +115,8 @@ def find_top_new_viral_tweet(min_faves=5000):
         t_id = str(t.get("id", "")).strip()
         t_url = t.get("url", "")
         t_text = t.get("text", "")
-        if not dedup_engine.is_sent(t_id, url=t_url, text=t_text):
+        t_author = t.get("author", "")
+        if not dedup_engine.is_sent(t_id, url=t_url, text=t_text, author=t_author):
             unseen.append(t)
 
     if not unseen:
@@ -142,10 +143,13 @@ def find_top_new_viral_tweet(min_faves=5000):
     valid_unseen.sort(key=lambda x: int(x.get("likes") or 0), reverse=True)
     top_tweet = valid_unseen[0]
 
-    # Uçuş rezervasyonu koy
-    dedup_engine.reserve(top_tweet.get("id"))
-    if top_tweet.get("url"):
-        dedup_engine.reserve(top_tweet.get("url"))
+    # Kalıcı kilit koy (claim)
+    dedup_engine.claim(
+        top_tweet.get("id"),
+        url=top_tweet.get("url"),
+        author=top_tweet.get("author", ""),
+        text=top_tweet.get("text", "")
+    )
 
     return top_tweet, len(valid_unseen), None
 
@@ -172,9 +176,10 @@ def find_ai_curated_viral_tweet(min_faves=3000, exclude_id=None):
         t_id = str(t.get("id", "")).strip()
         t_url = t.get("url", "")
         t_text = t.get("text", "")
+        t_author = t.get("author", "")
         if exclude_id and t_id == str(exclude_id):
             continue
-        if not dedup_engine.is_sent(t_id, url=t_url, text=t_text):
+        if not dedup_engine.is_sent(t_id, url=t_url, text=t_text, author=t_author):
             unseen.append(t)
 
     if not unseen:
@@ -191,10 +196,13 @@ def find_ai_curated_viral_tweet(min_faves=3000, exclude_id=None):
     if evaluated:
         evaluated.sort(key=lambda x: x["ai_eval"].get("score", 0), reverse=True)
         best = evaluated[0]
-        # Uçuş rezervasyonu koy
-        dedup_engine.reserve(best.get("id"))
-        if best.get("url"):
-            dedup_engine.reserve(best.get("url"))
+        # Kalıcı kilit koy (claim)
+        dedup_engine.claim(
+            best.get("id"),
+            url=best.get("url"),
+            author=best.get("author", ""),
+            text=best.get("text", "")
+        )
         return best, len(unseen), best["ai_eval"], None
 
     # Sert filtre kuralı: AI onaylamadıysa zorlama fallback yapma, bu turu boş geç
@@ -224,9 +232,10 @@ def find_high_repost_viral_tweet(min_faves=3000, exclude_ids=None):
         t_id = str(t.get("id", "")).strip()
         t_url = t.get("url", "")
         t_text = t.get("text", "")
+        t_author = t.get("author", "")
         if t_id in exclude_set:
             continue
-        if not dedup_engine.is_sent(t_id, url=t_url, text=t_text):
+        if not dedup_engine.is_sent(t_id, url=t_url, text=t_text, author=t_author):
             unseen.append(t)
 
     if not unseen:
@@ -293,10 +302,13 @@ def find_high_repost_viral_tweet(min_faves=3000, exclude_ids=None):
     best_candidate = scored_candidates[0]
     best_tweet = best_candidate["tweet"]
 
-    # Uçuş rezervasyonu koy
-    dedup_engine.reserve(best_tweet.get("id"))
-    if best_tweet.get("url"):
-        dedup_engine.reserve(best_tweet.get("url"))
+    # Kalıcı kilit koy (claim)
+    dedup_engine.claim(
+        best_tweet.get("id"),
+        url=best_tweet.get("url"),
+        author=best_tweet.get("author", ""),
+        text=best_tweet.get("text", "")
+    )
 
     stats = {
         "score": best_candidate["score"],

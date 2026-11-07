@@ -190,7 +190,8 @@ def find_top_new_viral_twitter_video(min_faves=3000):
         t_id = str(t.get("id", "")).strip()
         t_url = t.get("url", "")
         t_text = t.get("text", "")
-        if not dedup_engine.is_sent(t_id, url=t_url, text=t_text):
+        t_author = t.get("author", "")
+        if not dedup_engine.is_sent(t_id, url=t_url, text=t_text, author=t_author):
             unseen.append(t)
 
     if not unseen:
@@ -214,7 +215,7 @@ def find_top_new_viral_twitter_video(min_faves=3000):
         v_details = fetch_twitter_video_details(t_id, author=author)
         if v_details and v_details.get("video_url"):
             # Ayrıntı URL'si veya metni daha önce gönderilmiş mi son kontrol
-            if dedup_engine.is_sent(t_id, url=v_details.get("url"), text=v_details.get("text")):
+            if dedup_engine.is_sent(t_id, url=v_details.get("url"), text=v_details.get("text"), author=author):
                 continue
 
             if not v_details.get("likes") and t.get("likes"):
@@ -237,10 +238,13 @@ def find_top_new_viral_twitter_video(min_faves=3000):
 
     if qualified:
         chosen = qualified[0]
-        # Anlık uçuş kilidi koy (aynı anda çalışan diğer aramalar bunu seçemesin)
-        dedup_engine.reserve(chosen.get("id"))
-        if chosen.get("url"):
-            dedup_engine.reserve(chosen.get("url"))
+        # Kalıcı kilit koy (claim)
+        dedup_engine.claim(
+            chosen.get("id"),
+            url=chosen.get("url"),
+            author=chosen.get("author", ""),
+            text=chosen.get("text", "")
+        )
         return chosen, len(qualified), None
 
     # Sert filtre kuralı: Dikey Reels formatına uymayan veya AI onayından geçmeyen hiçbir video gönderilmez
