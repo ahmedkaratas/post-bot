@@ -32,6 +32,7 @@ from session_manager import session_manager
 from dedup_engine import dedup_engine
 import photoroom_engine
 import history_curator
+from topic_manager import topic_manager, VALID_ROLES
 
 BOT_TOKEN = os.getenv("BOT_TOKEN", "").strip()
 
@@ -221,6 +222,29 @@ def delete_message(chat_id, message_id):
         requests.post(f"{API_URL}/deleteMessage", json={"chat_id": chat_id, "message_id": message_id}, timeout=10)
     except Exception:
         pass
+
+def send_temporary_notice(chat_id, text, reply_to_id=None, thread_id=None, duration=20.0):
+    """
+    Kullanıcıya geçici uyarı mesajı gönderir ve hem bu uyarıyı hem de
+    kullanıcının hatalı mesajını belirtilen süre (varsayılan 20 sn) sonra siler (Sorun 2).
+    """
+    try:
+        sent = send_message(chat_id, text, reply_to_message_id=reply_to_id, message_thread_id=thread_id)
+        bot_msg_id = (sent or {}).get("result", {}).get("message_id")
+
+        def _reaper():
+            if bot_msg_id:
+                delete_message(chat_id, bot_msg_id)
+            if reply_to_id:
+                delete_message(chat_id, reply_to_id)
+
+        timer = threading.Timer(duration, _reaper)
+        timer.daemon = True
+        timer.start()
+        return sent
+    except Exception as e:
+        print(f"Geçici uyarı gönderme hatası: {e}")
+        return None
 
 def is_video_or_gif(reply):
     """
@@ -1599,14 +1623,18 @@ def run_radar_scheduler():
     while running:
         try:
             cfg = radar_store.get_config()
-            if cfg.get("is_active") and cfg.get("target_chat_id"):
+            target = topic_manager.get_target_for_role("tweet")
+            target_chat_id = target["chat_id"] if target else cfg.get("target_chat_id")
+            target_thread_id = target["thread_id"] if target else cfg.get("target_thread_id")
+
+            if cfg.get("is_active") and target_chat_id:
                 interval_secs = cfg.get("interval_minutes", 120) * 60
                 last_run = cfg.get("last_run_timestamp", 0)
                 now = int(time.time())
 
                 if now - last_run >= interval_secs:
-                    print(f"🛰️ Otomatik Radar tetiklendi (Chat: {cfg['target_chat_id']}, Thread: {cfg['target_thread_id']})...")
-                    delivered = trigger_radar_delivery(cfg["target_chat_id"], cfg["target_thread_id"])
+                    print(f"🛰️ Otomatik Radar tetiklendi (Chat: {target_chat_id}, Thread: {target_thread_id})...")
+                    delivered = trigger_radar_delivery(target_chat_id, target_thread_id)
                     if delivered:
                         radar_store.touch_last_run()
                     else:
@@ -1914,14 +1942,18 @@ def run_reels_scheduler():
     while running:
         try:
             cfg = reels_store.get_config()
-            if cfg.get("is_active") and cfg.get("target_chat_id"):
+            target = topic_manager.get_target_for_role("reels")
+            target_chat_id = target["chat_id"] if target else cfg.get("target_chat_id")
+            target_thread_id = target["thread_id"] if target else cfg.get("target_thread_id")
+
+            if cfg.get("is_active") and target_chat_id:
                 interval_secs = cfg.get("interval_minutes", 120) * 60
                 last_run = cfg.get("last_run_timestamp", 0)
                 now = int(time.time())
 
                 if now - last_run >= interval_secs:
-                    print(f"🎬 Otomatik Reels Radarı tetiklendi (Chat: {cfg['target_chat_id']}, Thread: {cfg['target_thread_id']})...")
-                    delivered = trigger_reels_delivery(cfg["target_chat_id"], cfg["target_thread_id"])
+                    print(f"🎬 Otomatik Reels Radarı tetiklendi (Chat: {target_chat_id}, Thread: {target_thread_id})...")
+                    delivered = trigger_reels_delivery(target_chat_id, target_thread_id)
                     if delivered:
                         reels_store.touch_last_run()
                     else:
@@ -2094,18 +2126,65 @@ def handle_update(update):
     if not is_group:
         backup_manager.set_admin_chat_id(chat_id)
 
-    # Otomatik hedef koruma: Konteyner yeniden başladığında radar hedefleri varsayılana dönmüşse,
-    # gruptan atılan ilk komutla aktif odayı ve konuyu otomatik olarak radara bağla
+    text = (message.get("text") or "").strip()
+    caption = (message.get("caption") or "").strip()
+
+    # Sorun 2: Konu (Oda) Görev Ayrıştırması ve Yönlendirme (data/topics.json)
     if is_group:
-        try:
-            cfg = radar_store.get_config()
-            if cfg.get("target_chat_id") in (-1004409412493, None):
-                radar_store.set_target(chat_id, thread_id, title=message.get("chat", {}).get("title"))
-            r_cfg = reels_store.get_config()
-            if r_cfg.get("target_chat_id") in (-1004409412493, None):
-                reels_store.set_target(chat_id, thread_id, title=message.get("chat", {}).get("title"))
-        except Exception:
+        current_role = topic_manager.get_role_for_thread(chat_id, thread_id)
+
+        # 1. Yorumlar Odası ('comments'): Bot burada tamamen sessizdir, hiçbir şeye yanıt vermez
+        if current_role == "comments":
+            return
+
+        # 2. Test Odası ('test'): Tüm komutlar serbesttir, filtresiz çalışır
+        if current_role == "test":
             pass
+        else:
+            # 3. Komutun veya içeriğin ait olduğu doğru rolü belirle
+            cmd_role = topic_manager.determine_command_role(text, message)
+
+            # Oda yönetim komutları (/oda_ata, /oda, /odalar, /oda_sil) her zaman serbest
+            if cmd_role == "management":
+                pass
+            elif current_role:
+                # Odaya özel rol kısıtlaması
+                if current_role == "photo":
+                    # SadeceFotoğraf odasında sadece görsel kabul edilir; metin komutu girilirse 20 sn uyarı ver
+                    if cmd_role != "photo":
+                        send_temporary_notice(
+                            chat_id,
+                            "⚠️ <b>Bu oda sadece fotoğraf ('photo') işleme içindir.</b>\n"
+                            "Komutlar için 'general', linkler için 'link' odasını kullanabilirsiniz.",
+                            reply_to_id=msg_id,
+                            thread_id=thread_id,
+                            duration=20.0
+                        )
+                        return
+                elif cmd_role and cmd_role != current_role:
+                    # Yanlış odaya komut yazılmış: 20 sn sonra kendini silen uyarı
+                    send_temporary_notice(
+                        chat_id,
+                        f"⚠️ Bu komut <b>'{cmd_role}'</b> odasına aittir. Oraya geçebilirsiniz.",
+                        reply_to_id=msg_id,
+                        thread_id=thread_id,
+                        duration=20.0
+                    )
+                    return
+            else:
+                # Henüz rol atanmamış bir konu/oda:
+                # Eğer komutun rolü grupta başka bir odaya atanmışsa, kullanıcıyı yönlendir
+                if cmd_role and cmd_role not in ("management", "photo"):
+                    assigned_target = topic_manager.get_target_for_role(cmd_role)
+                    if assigned_target and (assigned_target.get("chat_id") == chat_id or not assigned_target.get("chat_id")):
+                        send_temporary_notice(
+                            chat_id,
+                            f"⚠️ Bu komut <b>'{cmd_role}'</b> odasına aittir. Oraya geçebilirsiniz.",
+                            reply_to_id=msg_id,
+                            thread_id=thread_id,
+                            duration=20.0
+                        )
+                        return
 
     # Metin komutları
     if "text" in message:
@@ -2328,6 +2407,9 @@ def handle_update(update):
                 recent_lines.append(f"• <b>#{pid}</b> [{stype}] @{auth} ({time_str} UTC)")
             recent_block = "\n".join(recent_lines) if recent_lines else "• Henüz gönderi yok"
 
+            all_topics = topic_manager.get_all_roles()
+            topic_str = f"🟢 {len(all_topics)} / 8 Rol Atanmış" if all_topics else "⚪ Henüz atanmamış (/oda_ata ile atayın)"
+
             conflict_line = (
                 f"⚠️ <b>DİKKAT: Başka bir bot kopyası çalışıyor olabilir!</b>\n"
                 f"• 409 Conflict: {CONFLICT_TRACKER['count']} kez tespit edildi (Son: {CONFLICT_TRACKER['last_desc'][:50]})\n"
@@ -2340,6 +2422,7 @@ def handle_update(update):
                 f"🆔 <b>Instance ID:</b> <code>{INSTANCE_ID}</code>\n"
                 f"🔢 <b>Boot Sayısı:</b> #{boot_count} (<code>{boot_id}</code>)\n"
                 f"⏱️ <b>Çalışma Süresi:</b> {uptime_str}\n\n"
+                f"🏷️ <b>Konu / Oda Rolleri (Sorun 2):</b> {topic_str}\n"
                 f"💾 <b>Kalıcı Depolama (/app/data):</b>\n"
                 f"• Volume Durumu: {storage_str}\n"
                 f"• .boot_log Durumu: {boot_status_str}\n\n"
@@ -2388,6 +2471,102 @@ def handle_update(update):
                 kwargs={"force": True},
                 daemon=True
             ).start()
+            return
+
+        # /oda_ata: Bulunulan konuyu/odayı belirtilen role bağlar (Sorun 2)
+        if text.startswith("/oda_ata"):
+            parts = text.split()
+            if len(parts) < 2:
+                valid_list = "\n".join(f"• <code>{r}</code>: {desc}" for r, desc in VALID_ROLES.items())
+                send_message(
+                    chat_id,
+                    f"⚠️ <b>Kullanım:</b> <code>/oda_ata &lt;rol&gt;</code>\n\n"
+                    f"📋 <b>Geçerli Roller:</b>\n{valid_list}",
+                    reply_to_message_id=msg_id,
+                    message_thread_id=thread_id
+                )
+                return
+
+            role = parts[1].strip().lower()
+            chat_title = message.get("chat", {}).get("title") or "Grup"
+            ok, msg = topic_manager.set_topic_role(role, chat_id, thread_id=thread_id, title=chat_title)
+
+            # Hedefleri radar_store ve reels_store ile de senkronize et
+            if ok:
+                if role == "tweet":
+                    radar_store.set_target(chat_id, thread_id, title=chat_title)
+                elif role == "reels":
+                    reels_store.set_target(chat_id, thread_id, title=chat_title)
+                backup_manager.notify_data_changed(API_URL, INSTANCE_ID, boot_id=CURRENT_BOOT_INFO.get("boot_id", ""))
+
+            send_message(chat_id, msg, reply_to_message_id=msg_id, message_thread_id=thread_id)
+            return
+
+        # /oda: Bulunulan konunun atanmış rolünü gösterir
+        if text == "/oda" or text.startswith("/oda "):
+            curr_role = topic_manager.get_role_for_thread(chat_id, thread_id)
+            if curr_role:
+                desc = VALID_ROLES.get(curr_role, "")
+                send_message(
+                    chat_id,
+                    f"🏷️ <b>Bu Konunun / Odanın Rolü:</b> <code>{curr_role}</code>\n"
+                    f"• <b>Görev:</b> {desc}\n"
+                    f"• <b>Thread ID:</b> <code>{thread_id or 'Genel'}</code>",
+                    reply_to_message_id=msg_id,
+                    message_thread_id=thread_id
+                )
+            else:
+                send_message(
+                    chat_id,
+                    f"ℹ️ <b>Bu konuya henüz bir rol atanmamış.</b>\n"
+                    f"Atamak için: <code>/oda_ata &lt;rol&gt;</code> (Örn: <code>/oda_ata reels</code>)\n"
+                    f"Tüm odaları görmek için: <code>/odalar</code>",
+                    reply_to_message_id=msg_id,
+                    message_thread_id=thread_id
+                )
+            return
+
+        # /odalar: Atanmış tüm konu ve oda rollerini listeler
+        if text.startswith("/odalar"):
+            all_roles = topic_manager.get_all_roles()
+            if not all_roles:
+                send_message(
+                    chat_id,
+                    "📭 <b>Henüz hiçbir odaya rol atanmamış.</b>\n"
+                    "Konularda <code>/oda_ata &lt;rol&gt;</code> yazarak rolleri bağlayabilirsiniz.",
+                    reply_to_message_id=msg_id,
+                    message_thread_id=thread_id
+                )
+                return
+
+            lines = ["📋 <b>Aktif Konu / Oda Rolleri:</b>\n"]
+            for r, info in all_roles.items():
+                desc = VALID_ROLES.get(r, "")
+                t_id = info.get("thread_id")
+                t_str = f"Thread: <code>{t_id}</code>" if t_id else "Genel Akış"
+                lines.append(f"• <code>{r}</code> ➔ {t_str} ({desc})")
+
+            lines.append("\n💡 <i>Rol silmek için: <code>/oda_sil &lt;rol&gt;</code></i>")
+            send_message(chat_id, "\n".join(lines), reply_to_message_id=msg_id, message_thread_id=thread_id)
+            return
+
+        # /oda_sil: Bir rol atamasını siler
+        if text.startswith("/oda_sil"):
+            parts = text.split()
+            if len(parts) < 2:
+                send_message(
+                    chat_id,
+                    "⚠️ <b>Kullanım:</b> <code>/oda_sil &lt;rol&gt;</code> (Örn: <code>/oda_sil reels</code>)",
+                    reply_to_message_id=msg_id,
+                    message_thread_id=thread_id
+                )
+                return
+
+            role = parts[1].strip().lower()
+            ok, msg = topic_manager.delete_topic_role(role)
+            if ok:
+                backup_manager.notify_data_changed(API_URL, INSTANCE_ID, boot_id=CURRENT_BOOT_INFO.get("boot_id", ""))
+            send_message(chat_id, msg, reply_to_message_id=msg_id, message_thread_id=thread_id)
             return
 
         # /d veya /dekupe komutu: PhotoRoom arka plan silme + 1500x2000 beyaz tuval
@@ -3034,9 +3213,12 @@ def handle_update(update):
         handle_dekupe_command(chat_id, msg_id, message, opt_text=caption, message_thread_id=thread_id)
         return
 
-    # Eğer grup veya kanaldaysa ve /d verilmediyse, gruptaki diğer botlarla çakışmamak için fotoğrafı işleme
+    # Eğer grup veya kanaldaysa ve /d verilmediyse, gruptaki diğer botlarla çakışmamak için
+    # sadece 'photo' (SadeceFotoğraf) veya 'test' odasından gelen düz fotoğrafları kabul et (Sorun 2)
     if is_group:
-        return
+        current_role = topic_manager.get_role_for_thread(chat_id, thread_id)
+        if current_role not in ("photo", "test"):
+            return
 
     file_id = None
     file_name = "instagram_post.png"
