@@ -28,6 +28,19 @@ def _clean_cookie_val(val: str, prefix: str = "") -> str:
                 val = m.group(1).strip().strip('"\'')
     return val.strip()
 
+def is_persistent_storage_mounted() -> bool:
+    """Docker konteyneri içinde /app/data dizininin kalıcı bir volume ile bağlı olup olmadığını kontrol eder."""
+    try:
+        if os.path.exists("/proc/mounts"):
+            with open("/proc/mounts", "r") as f:
+                for line in f:
+                    parts = line.split()
+                    if len(parts) >= 2 and (parts[1] == "/app/data" or parts[1].endswith("/data")):
+                        return True
+        return os.path.ismount(DATA_DIR)
+    except Exception:
+        return False
+
 class SessionManager:
     def __init__(self, file_path=COOKIES_FILE):
         self.file_path = file_path
@@ -172,7 +185,8 @@ class SessionManager:
                 "ct0_masked": mask(tw_ct0),
                 "source": "Kalıcı Dosya (data/cookies.json)" if (data.get("twitter_auth_token") and data.get("twitter_ct0")) else ("Environment Variable" if (tw_auth and tw_ct0) else "Yok"),
                 "updated_at": data.get("twitter_updated_at")
-            }
+            },
+            "storage_persistent": is_persistent_storage_mounted()
         }
 
 session_manager = SessionManager()

@@ -6,9 +6,19 @@ Kullanıcı geri bildirimlerini (/tuttu, /tutmadi, /sonuc) ve A/B performansın�
 """
 
 import os
+import re
 import json
 import time
 import threading
+
+def normalize_url(url: str) -> str:
+    if not url:
+        return ""
+    u = str(url).strip()
+    u = re.sub(r"^https?://(?:www\.)?twitter\.com", "https://x.com", u)
+    u = re.sub(r"^http://", "https://", u)
+    u = u.split("?")[0].rstrip("/")
+    return u
 
 DATA_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
 HISTORY_FILE = os.path.join(DATA_DIR, "post_history.json")
@@ -327,26 +337,57 @@ class HistoryStore:
 
         with self._lock:
             self.data = self._load()
-            posts = self.data.get("posts", {}).values()
+            posts = list(self.data.get("posts", {}).values())
 
-            clean_id = str(item_id).strip()
-            clean_link = str(link).strip()
-            clean_text = str(text).strip()
+            clean_id = str(item_id).strip() if item_id else ""
+            clean_link = normalize_url(str(link).strip()) if link else ""
+            clean_text = str(text).strip() if text else ""
+
+            target_status_id = None
+            if clean_id.isdigit():
+                target_status_id = clean_id
+            elif clean_link:
+                m = re.search(r"/status/(\d+)", clean_link)
+                if m:
+                    target_status_id = m.group(1)
+
+            target_reel_code = None
+            if clean_link:
+                rm = re.search(r"/(?:reel|reels)/([a-zA-Z0-9_-]+)", clean_link)
+                if rm:
+                    target_reel_code = rm.group(1)
+            elif clean_id and not clean_id.isdigit() and not clean_id.startswith("http"):
+                target_reel_code = clean_id
 
             for p in posts:
-                p_link = p.get("link", "")
+                p_link = normalize_url(p.get("link", ""))
                 p_text = p.get("text", "")
 
-                # 1. ID veya Link eşleşmesi
-                if clean_id and (f"/{clean_id}" in p_link or f"={clean_id}" in p_link or clean_id == str(p.get("id"))):
-                    return True
+                # 1. Status ID eşleşmesi (X / Twitter)
+                if target_status_id:
+                    if f"/{target_status_id}" in p_link or f"={target_status_id}" in p_link:
+                        return True
+                    pm = re.search(r"/status/(\d+)", p_link)
+                    if pm and pm.group(1) == target_status_id:
+                        return True
 
-                if clean_link and (clean_link in p_link or p_link in clean_link):
-                    return True
+                # 2. Reels shortcode eşleşmesi (Instagram)
+                if target_reel_code:
+                    if f"/{target_reel_code}" in p_link:
+                        return True
+                    prm = re.search(r"/(?:reel|reels)/([a-zA-Z0-9_-]+)", p_link)
+                    if prm and prm.group(1) == target_reel_code:
+                        return True
 
-                # 2. Metin eşleşmesi (aynı içerik farklı bir hesap tarafından atılsa bile engelle)
-                if clean_text and len(clean_text) >= 30 and (clean_text in p_text or p_text in clean_text):
-                    return True
+                # 3. Tam URL eşleşmesi
+                if clean_link and p_link:
+                    if clean_link == p_link or clean_link in p_link or p_link in clean_link:
+                        return True
+
+                # 4. Metin eşleşmesi (aynı içerik farklı bir hesap tarafından atılsa bile engelle)
+                if clean_text and len(clean_text) >= 25 and p_text and len(p_text) >= 25:
+                    if clean_text in p_text or p_text in clean_text:
+                        return True
 
             return False
 

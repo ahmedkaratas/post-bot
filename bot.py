@@ -1214,6 +1214,11 @@ def deliver_ai_curated_tweet(chat_id, tweet_dict, ai_eval, thread_id=None, reply
         )
         send_message(chat_id, ai_header, reply_to_message_id=reply_to_id, message_thread_id=thread_id)
 
+        # Anons yapıldığı anda kalıcı olarak tekilleştirme motoruna kaydet (mükerrer gönderimi garantili engeller)
+        dedup_engine.mark_sent(tweet_id, url=tweet_url, author=resolved_handle, text=tweet_dict.get("text", ""))
+        radar_store.mark_sent(f"ai_{tweet_id}", author=resolved_handle, likes=likes)
+        radar_store.mark_sent(tweet_id, author=resolved_handle, likes=likes)
+
         # 6. Slaytları İlet
         album_caption = f"🤖 <b>AI Seçimli Albüm{post_tag} ({len(slides)} Slayt):</b>\n@{resolved_handle} • Skor: {score}/10"
         if len(slides) == 1:
@@ -1231,7 +1236,7 @@ def deliver_ai_curated_tweet(chat_id, tweet_dict, ai_eval, thread_id=None, reply
                 f"{API_URL}/sendDocument",
                 data=doc_data,
                 files={"document": (slides[0]["filename"], slides[0]["bytes"], "image/png")},
-                timeout=35
+                timeout=45
             )
         else:
             files_data = [(s["filename"], s["bytes"]) for s in slides]
@@ -1245,16 +1250,13 @@ def deliver_ai_curated_tweet(chat_id, tweet_dict, ai_eval, thread_id=None, reply
 
         # İnce ayraç
         send_message(chat_id, "----------------------------------------", message_thread_id=thread_id)
-
-        # 6. Tekilleştirme (5 Katmanlı Motor)
-        dedup_engine.mark_sent(tweet_id, url=tweet_url, author=resolved_handle, text=tweet_dict.get("text", ""))
-        radar_store.mark_sent(f"ai_{tweet_id}", author=resolved_handle, likes=likes)
-        radar_store.mark_sent(tweet_id, author=resolved_handle, likes=likes)
         return True, None
     except Exception as e:
-        dedup_engine.release(tweet_dict.get("id"))
-        if tweet_dict.get("url"):
-            dedup_engine.release(tweet_dict.get("url"))
+        # Eğer post_id atanmadıysa ve Telegram başlığı gönderilmediyse rezervasyonu serbest bırak
+        if post_id is None:
+            dedup_engine.release(tweet_dict.get("id"))
+            if tweet_dict.get("url"):
+                dedup_engine.release(tweet_dict.get("url"))
         print(f"AI Tweet teslimat hatası: {e}")
         return False, str(e)
 
@@ -1479,10 +1481,20 @@ def deliver_instagram_reel(chat_id, thread_id=None, reply_to_id=None):
                     dedup_engine.mark_sent(code, url=reel_url, author=username, text=caption_raw)
                     reels_store.mark_sent(code, username=username, plays=plays, likes=likes)
                     return True, None
+            if post_id:
+                try:
+                    history_store.delete_post(post_id)
+                except Exception:
+                    pass
             dedup_engine.release(code)
             dedup_engine.release(reel_url)
             return False, f"Telegram video gönderme hatası: {resp.text[:100]}"
     except Exception as e:
+        if 'post_id' in locals() and post_id:
+            try:
+                history_store.delete_post(post_id)
+            except Exception:
+                pass
         dedup_engine.release(top_reel.get("code") if 'top_reel' in locals() and top_reel else None)
         return False, str(e)
 
@@ -1580,10 +1592,20 @@ def deliver_twitter_video(chat_id, thread_id=None, reply_to_id=None):
                     dedup_engine.mark_sent(tweet_id, url=tweet_url, author=author, text=text_raw)
                     reels_store.mark_sent(f"x_{tweet_id}", username=author, plays=views, likes=likes)
                     return True, None
+            if post_id:
+                try:
+                    history_store.delete_post(post_id)
+                except Exception:
+                    pass
             dedup_engine.release(tweet_id)
             dedup_engine.release(tweet_url)
             return False, f"Telegram video gönderme hatası: {resp.text[:100]}"
     except Exception as e:
+        if 'post_id' in locals() and post_id:
+            try:
+                history_store.delete_post(post_id)
+            except Exception:
+                pass
         dedup_engine.release(top_video.get("id") if 'top_video' in locals() and top_video else None)
         return False, str(e)
 
@@ -1951,12 +1973,20 @@ def handle_update(update):
             status = session_manager.get_status(verify_live=True)
             ig = status["instagram"]
             tw = status["twitter"]
+            is_mounted = status.get("storage_persistent", False)
 
             if ig.get("live_status"):
                 ig_status = f"{ig['live_status']} (Maskeli: <code>{ig['masked']}</code>)"
             else:
                 ig_status = f"🟢 Aktif (Maskeli: <code>{ig['masked']}</code>)" if ig["active"] else "🔴 Tanımsız / Süresi Dolmuş"
             tw_status = f"🟢 Aktif (auth: <code>{tw['auth_token_masked']}</code>, ct0: <code>{tw['ct0_masked']}</code>)" if tw["active"] else "🔴 Tanımsız / Eksik"
+
+            storage_note = (
+                "💾 <b>Kalıcı Depolama (/app/data):</b> 🟢 Aktif Bağlı (Deploylarda veriler korunur)"
+                if is_mounted else
+                "💾 <b>Kalıcı Depolama (/app/data):</b> ⚠️ Bağlı Değil (Geçici Hafıza)\n"
+                "<i>⚠️ Coolify panelinde uygulamanızın 'Storages' sekmesine gidip /app/data için bir kalıcı depolama ekleyin; aksi takdirde her git push / deploy işleminde çerezler ve post geçmişi sıfırlanabilir.</i>"
+            )
 
             msg_txt = (
                 "🔐 <b>Canlı Oturum & Çerez Durumu</b>\n\n"
@@ -1966,6 +1996,7 @@ def handle_update(update):
                 f"🐦 <b>Twitter/X Scraper:</b>\n"
                 f"• Durum: {tw_status}\n"
                 f"• Kaynak: {tw['source']}\n\n"
+                f"{storage_note}\n\n"
                 "💡 <b>Canlı Güncellemek İçin (Bota Özelden / DM):</b>\n"
                 "• <code>/set_ig &lt;sessionid&gt;</code>\n"
                 "• <code>/set_x &lt;auth_token&gt; &lt;ct0&gt;</code>\n\n"
