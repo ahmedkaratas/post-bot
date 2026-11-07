@@ -200,6 +200,117 @@ def find_ai_curated_viral_tweet(min_faves=3000, exclude_id=None):
     # Sert filtre kuralı: AI onaylamadıysa zorlama fallback yapma, bu turu boş geç
     return None, len(unseen), None, "Bu turda AI küratör onayını geçen (Türkçe, reklamsız ve kaliteli) yeni viral tweet bulunamadı."
 
+def find_high_repost_viral_tweet(min_faves=3000, exclude_ids=None):
+    """
+    Havuzdaki tweetler arasından hem yüksek beğeni almış hem de diğer tweetlere göre
+    belirgin şekilde yüksek repost (retweet + alıntı) sayısına ve yayılım oranına sahip
+    en viral tweeti bulur (3. Sinyal: Yüksek Repost / Viral Yayılım).
+    exclude_ids: Standart veya AI tarafından seçilmiş tweet ID'leri (çakışmayı önler).
+    Dönüş: (top_repost_tweet, total_candidates, stats_dict, err_msg)
+    """
+    exclude_set = {str(eid).strip() for eid in (exclude_ids or []) if eid}
+
+    res = search_viral_tweets(min_faves=min_faves)
+    if not res.get("success"):
+        return None, 0, None, res.get("error", "Bilinmeyen arama hatası")
+
+    raw_tweets = res.get("tweets", [])
+    if not raw_tweets:
+        return None, 0, None, "Arama kriterlerine uyan tweet bulunamadı."
+
+    # 1. Daha önce iletilmemiş olanları filtrele (5 katmanlı tekilleştirme motoru)
+    unseen = []
+    for t in raw_tweets:
+        t_id = str(t.get("id", "")).strip()
+        t_url = t.get("url", "")
+        t_text = t.get("text", "")
+        if t_id in exclude_set:
+            continue
+        if not dedup_engine.is_sent(t_id, url=t_url, text=t_text):
+            unseen.append(t)
+
+    if not unseen:
+        return None, len(raw_tweets), None, "Tüm tweetler daha önce iletilmiş."
+
+    from video_curator_agent import detect_ad_or_spam
+
+    # 2. Sert filtreler: Promoted/reklam, yabancı dil ve spam olanları ele
+    valid_unseen = []
+    for t in unseen:
+        if t.get("is_promoted"):
+            continue
+        lang = (t.get("lang") or "").strip().lower()
+        if lang and lang != "tr":
+            continue
+        if detect_ad_or_spam(t.get("text", ""))[0]:
+            continue
+        valid_unseen.append(t)
+
+    if not valid_unseen:
+        return None, len(unseen), None, "Sert filtrelere uyan yüksek repost adayı bulunamadı."
+
+    # 3. Havuz ortalamasını hesapla (diğer tweetlere göre kıyaslama için)
+    all_reposts = [int(t.get("retweets") or 0) + int(t.get("quotes") or 0) for t in valid_unseen]
+    avg_reposts = sum(all_reposts) / max(len(all_reposts), 1)
+
+    # 4. Adayları 'Yüksek Beğeni + Yüksek Repost / Yayılım Oranı' formülüne göre puanla
+    scored_candidates = []
+    for t in valid_unseen:
+        likes = int(t.get("likes") or 0)
+        retweets = int(t.get("retweets") or 0)
+        quotes = int(t.get("quotes") or 0)
+        total_reposts = retweets + quotes
+        repost_rate = total_reposts / max(likes, 1)
+
+        # En azından kayda değer bir repost sayısı olmalı (minimum 30 repost)
+        if total_reposts < 30:
+            continue
+
+        multiplier = total_reposts / max(avg_reposts, 1)
+
+        # Kompozit Virallik Puanı:
+        # - total_reposts ağırlığı: her repost 2 puan
+        # - repost_rate ağırlığı: yüksek yayılım oranını (%10, %20 vb.) ödüllendirir
+        # - likes taban puanı: yüksek beğeniyi de gözetir
+        composite_score = (total_reposts * 2.0) + (repost_rate * 10000.0) + (likes * 0.15)
+
+        scored_candidates.append({
+            "tweet": t,
+            "score": composite_score,
+            "total_reposts": total_reposts,
+            "retweets": retweets,
+            "quotes": quotes,
+            "likes": likes,
+            "repost_rate_pct": round(repost_rate * 100, 1),
+            "multiplier": round(multiplier, 1)
+        })
+
+    if not scored_candidates:
+        return None, len(valid_unseen), None, "Yeterli repost / retweet sayısına (min 30) ulaşmış aday bulunamadı."
+
+    # En yüksek kompozit repost puanına göre sırala
+    scored_candidates.sort(key=lambda x: x["score"], reverse=True)
+    best_candidate = scored_candidates[0]
+    best_tweet = best_candidate["tweet"]
+
+    # Uçuş rezervasyonu koy
+    dedup_engine.reserve(best_tweet.get("id"))
+    if best_tweet.get("url"):
+        dedup_engine.reserve(best_tweet.get("url"))
+
+    stats = {
+        "score": best_candidate["score"],
+        "total_reposts": best_candidate["total_reposts"],
+        "retweets": best_candidate["retweets"],
+        "quotes": best_candidate["quotes"],
+        "likes": best_candidate["likes"],
+        "repost_rate_pct": best_candidate["repost_rate_pct"],
+        "multiplier_vs_avg": best_candidate["multiplier"],
+        "avg_reposts_in_batch": round(avg_reposts, 1)
+    }
+
+    return best_tweet, len(scored_candidates), stats, None
+
 if __name__ == "__main__":
     print("Testing load_twitter_credentials:")
     tok, c = load_twitter_credentials()

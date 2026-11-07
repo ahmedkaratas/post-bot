@@ -22,7 +22,7 @@ from http.server import HTTPServer, BaseHTTPRequestHandler
 from PIL import Image, ImageOps
 from html import escape
 from radar_store import radar_store
-from twitter_radar import find_top_new_viral_tweet, find_ai_curated_viral_tweet
+from twitter_radar import find_top_new_viral_tweet, find_ai_curated_viral_tweet, find_high_repost_viral_tweet
 from tweet_curator_agent import curate_smart_replies_and_caption
 from reels_store import reels_store
 from reels_radar import find_top_new_viral_reel, download_video_bytes
@@ -1260,11 +1260,82 @@ def deliver_ai_curated_tweet(chat_id, tweet_dict, ai_eval, thread_id=None, reply
         print(f"AI Tweet teslimat hatası: {e}")
         return False, str(e)
 
+def deliver_high_repost_radar_single(chat_id, thread_id=None, reply_to_id=None):
+    """Sadece yüksek repost almış viral tweeti bulup gönderir (/repost_now)."""
+    cfg = radar_store.get_config()
+    min_faves = cfg.get("min_faves", 3000)
+    repost_tweet, rp_total, rp_stats, rp_err = find_high_repost_viral_tweet(min_faves=min_faves)
+    if not repost_tweet:
+        if reply_to_id:
+            send_message(
+                chat_id,
+                f"⚠️ <b>Yüksek Repost Radarı:</b> {rp_err or 'Yeni yüksek repost tweet bulunamadı.'}",
+                reply_to_message_id=reply_to_id,
+                message_thread_id=thread_id
+            )
+        return False, rp_err
+
+    rp_id = repost_tweet["id"]
+    rp_url = repost_tweet["url"]
+    rp_author = repost_tweet.get("author", "X")
+    rp_likes = repost_tweet.get("likes", 0)
+    rp_retweets = int(repost_tweet.get("retweets") or 0)
+    rp_quotes = int(repost_tweet.get("quotes") or 0)
+    rp_total_shares = rp_retweets + rp_quotes
+    rp_rate_pct = rp_stats.get("repost_rate_pct", 0) if rp_stats else 0
+    rp_mult = rp_stats.get("multiplier_vs_avg", 1) if rp_stats else 1
+
+    post_id = None
+    try:
+        post_id = history_store.add_post(
+            source_type="tweet",
+            delivery_mode="high_repost",
+            link=rp_url,
+            author=rp_author,
+            text=repost_tweet.get("text", ""),
+            metrics={
+                "likes": rp_likes,
+                "retweets": rp_retweets,
+                "quotes": rp_quotes,
+                "total_reposts": rp_total_shares,
+                "repost_rate_pct": rp_rate_pct,
+                "views": repost_tweet.get("views", 0)
+            }
+        )
+    except Exception as hist_err:
+        print(f"Yüksek repost tweet geçmiş kaydetme hatası: {hist_err}")
+
+    post_tag = f" #{post_id}" if post_id else ""
+    mult_txt = f"\n📊 <i>Diğer tweetlere göre {rp_mult} kat daha fazla repost yapıldı!</i>" if rp_mult > 1.2 else ""
+    rp_header = (
+        f"🔁 <b>Yüksek Repost Seçimi{post_tag}</b>\n"
+        f"❤️ <b>Beğeni:</b> {rp_likes:,} • 🔁 <b>Repost:</b> {rp_total_shares:,} (Yayılım: %{rp_rate_pct})"
+        f"{mult_txt}\n"
+        f"🔗 <b>Orijinal link:</b> {rp_url}"
+    )
+    send_message(chat_id, rp_header, reply_to_message_id=reply_to_id, message_thread_id=thread_id)
+    dedup_engine.mark_sent(rp_id, url=rp_url, author=rp_author, text=repost_tweet.get("text", ""))
+    radar_store.mark_sent(f"rp_{rp_id}", author=rp_author, likes=rp_likes)
+    radar_store.mark_sent(rp_id, author=rp_author, likes=rp_likes)
+
+    handle_ig_command(
+        chat_id=chat_id,
+        msg_id=None,
+        raw_input=rp_url,
+        include_comments=True,
+        message_thread_id=thread_id,
+        is_radar=True,
+        post_id=post_id
+    )
+    send_message(chat_id, "----------------------------------------", message_thread_id=thread_id)
+    return True, None
+
 def trigger_radar_delivery(chat_id, thread_id=None, reply_to_id=None):
     """
-    Hedef odaya yeni viral tweetleri A/B test formatında teslim eder:
+    Hedef odaya yeni viral tweetleri 3'lü A/B test formatında teslim eder:
     1. Paket: Standart Radar (En yüksek beğenili tweet + 100+ beğenili yorumlar)
     2. Paket: AI Küratör Radarı (Gemini analizli en esprili/viral tweet + akıllı yorumlar + hazır caption)
+    3. Paket: Yüksek Repost / Viral Yayılım Radarı (Yüksek beğeni + diğer tweetlere göre yüksek repost)
     """
     try:
         cfg = radar_store.get_config()
@@ -1272,9 +1343,11 @@ def trigger_radar_delivery(chat_id, thread_id=None, reply_to_id=None):
 
         std_sent = False
         ai_sent = False
+        repost_sent = False
         top_std_id = None
+        top_ai_id = None
 
-        # 1. STANDART SEÇİM
+        # 1. STANDART SEÇİM (En yüksek beğeni alan)
         top_tweet, total_found, err = find_top_new_viral_tweet(min_faves=min_faves)
         if top_tweet:
             top_std_id = top_tweet["id"]
@@ -1333,6 +1406,7 @@ def trigger_radar_delivery(chat_id, thread_id=None, reply_to_id=None):
             exclude_id=top_std_id
         )
         if ai_tweet:
+            top_ai_id = ai_tweet.get("id")
             ok, a_err = deliver_ai_curated_tweet(chat_id, ai_tweet, ai_eval or {}, thread_id=thread_id, reply_to_id=reply_to_id)
             if ok:
                 ai_sent = True
@@ -1341,12 +1415,75 @@ def trigger_radar_delivery(chat_id, thread_id=None, reply_to_id=None):
         else:
             print(f"AI radar sonucu: {ai_err or 'Yeni AI viral tweet bulunamadı.'}")
 
-        # Eğer ikisi de bulunamadıysa ve kullanıcı manuel tetiklediyse bildirim gönder
-        if not std_sent and not ai_sent and reply_to_id is not None:
-            err_msg = f"⚠️ <b>Radar Bildirimi:</b> Kriterlere uyan yeni bir viral tweet bulunamadı.\n(Standart: {err or 'Yok'}, AI: {ai_err or 'Yok'})"
+        # 3. YÜKSEK REPOST & VİRAL YAYILIM SEÇİMİ (Kullanıcı Talebi 3. Sinyal)
+        repost_tweet, rp_total, rp_stats, rp_err = find_high_repost_viral_tweet(
+            min_faves=min_faves,
+            exclude_ids=[top_std_id, top_ai_id]
+        )
+        if repost_tweet:
+            rp_id = repost_tweet["id"]
+            rp_url = repost_tweet["url"]
+            rp_author = repost_tweet.get("author", "X")
+            rp_likes = repost_tweet.get("likes", 0)
+            rp_retweets = int(repost_tweet.get("retweets") or 0)
+            rp_quotes = int(repost_tweet.get("quotes") or 0)
+            rp_total_shares = rp_retweets + rp_quotes
+            rp_rate_pct = rp_stats.get("repost_rate_pct", 0) if rp_stats else 0
+            rp_mult = rp_stats.get("multiplier_vs_avg", 1) if rp_stats else 1
+
+            post_id = None
+            try:
+                post_id = history_store.add_post(
+                    source_type="tweet",
+                    delivery_mode="high_repost",
+                    link=rp_url,
+                    author=rp_author,
+                    text=repost_tweet.get("text", ""),
+                    metrics={
+                        "likes": rp_likes,
+                        "retweets": rp_retweets,
+                        "quotes": rp_quotes,
+                        "total_reposts": rp_total_shares,
+                        "repost_rate_pct": rp_rate_pct,
+                        "views": repost_tweet.get("views", 0)
+                    }
+                )
+            except Exception as hist_err:
+                print(f"Yüksek repost tweet geçmiş kaydetme hatası: {hist_err}")
+
+            post_tag = f" #{post_id}" if post_id else ""
+            mult_txt = f"\n📊 <i>Diğer tweetlere göre {rp_mult} kat daha fazla repost yapıldı!</i>" if rp_mult > 1.2 else ""
+            rp_header = (
+                f"🔁 <b>Yüksek Repost Seçimi{post_tag}</b>\n"
+                f"❤️ <b>Beğeni:</b> {rp_likes:,} • 🔁 <b>Repost:</b> {rp_total_shares:,} (Yayılım: %{rp_rate_pct})"
+                f"{mult_txt}\n"
+                f"🔗 <b>Orijinal link:</b> {rp_url}"
+            )
+            send_message(chat_id, rp_header, reply_to_message_id=reply_to_id, message_thread_id=thread_id)
+            dedup_engine.mark_sent(rp_id, url=rp_url, author=rp_author, text=repost_tweet.get("text", ""))
+            radar_store.mark_sent(f"rp_{rp_id}", author=rp_author, likes=rp_likes)
+            radar_store.mark_sent(rp_id, author=rp_author, likes=rp_likes)
+
+            handle_ig_command(
+                chat_id=chat_id,
+                msg_id=None,
+                raw_input=rp_url,
+                include_comments=True,
+                message_thread_id=thread_id,
+                is_radar=True,
+                post_id=post_id
+            )
+            send_message(chat_id, "----------------------------------------", message_thread_id=thread_id)
+            repost_sent = True
+        else:
+            print(f"Yüksek repost radar sonucu: {rp_err or 'Yeni yüksek repost tweet bulunamadı.'}")
+
+        # Eğer üçü de bulunamadıysa ve kullanıcı manuel tetiklediyse bildirim gönder
+        if not std_sent and not ai_sent and not repost_sent and reply_to_id is not None:
+            err_msg = f"⚠️ <b>Radar Bildirimi:</b> Kriterlere uyan yeni bir viral tweet bulunamadı.\n(Standart: {err or 'Yok'}, AI: {ai_err or 'Yok'}, Repost: {rp_err or 'Yok'})"
             send_message(chat_id, err_msg, reply_to_message_id=reply_to_id, message_thread_id=thread_id)
 
-        return (std_sent or ai_sent)
+        return (std_sent or ai_sent or repost_sent)
 
     except Exception as e:
         print(f"Radar genel teslimat hatası: {e}")
@@ -1852,7 +1989,8 @@ def handle_update(update):
                 " • Popüler yorumlara <b>bakmaz</b>; sadece ana tweet'i ve varsa tweet içi fotoğrafları hızlıca hazırlar.\n\n"
                 "🛰️ <b>Viral Tweet Radarı:</b>\n"
                 " • <code>/radar_start</code> - Bulunulan odayı otomatik hedefe bağlar ve periyodik taramayı başlatır.\n"
-                " • <code>/radar_now</code> - Beklemeden hemen yeni viral tweet bulup gönderir.\n"
+                " • <code>/radar_now</code> - Beklemeden hemen 3'lü viral paketi (Standart, AI Seçimi, Yüksek Repost) gönderir.\n"
+                " • <code>/repost_now</code> - Sadece yüksek repost ve yayılım almış tweeti getirir.\n"
                 " • <code>/radar_stop</code> - Otomatik taramayı duraklatır.\n"
                 " • <code>/radar_status</code> - Radar durumunu ve istatistiklerini gösterir.\n"
                 " • <code>/radar_set 5000</code> - Beğeni eşiğini ayarlar.\n"
@@ -2072,8 +2210,12 @@ def handle_update(update):
                 f"• <b>Kayıtlı Hedef:</b> {cfg.get('target_title') or 'Bilinmiyor'} ({room_str})\n"
                 f"• <b>Tarama Sıklığı:</b> Her {freq_str} bir\n"
                 f"• <b>Beğeni Filtresi:</b> Min {cfg['min_faves']:,} Beğeni\n"
+                "• <b>Teslimat Paketleri (3'lü Viral Sinyal):</b>\n"
+                "  1️⃣ <b>Standart:</b> En çok beğenilen tweet\n"
+                "  2️⃣ <b>AI Seçimi:</b> Gemini analizli mizahi/kaliteli tweet\n"
+                "  3️⃣ <b>Yüksek Repost:</b> Yüksek beğeni + yüksek repost/yayılım oranı\n"
                 f"• <b>Gönderilen Toplam Tweet:</b> {cfg['sent_count']} adet\n\n"
-                "ℹ️ <i>Sıklığı değiştirmek için:</i> <code>/radar_interval 120</code>"
+                "ℹ️ <i>Hemen test etmek için:</i> <code>/radar_now</code> veya <code>/repost_now</code>"
             )
             send_message(chat_id, status_txt, reply_to_message_id=msg_id, message_thread_id=thread_id)
             return
@@ -2125,12 +2267,27 @@ def handle_update(update):
         if text.startswith("/radar_now"):
             send_message(
                 chat_id,
-                "🔍 <b>En son viral Türkçe tweet aranıyor...</b>\n<i>Lütfen bekleyin, taranıyor.</i>",
+                "🔍 <b>En son viral Türkçe tweetler taranıyor (3'lü Paket: Standart, AI, Yüksek Repost)...</b>\n<i>Lütfen bekleyin, taranıyor.</i>",
                 reply_to_message_id=msg_id,
                 message_thread_id=thread_id
             )
             threading.Thread(
                 target=trigger_radar_delivery,
+                args=(chat_id, thread_id, msg_id),
+                daemon=True
+            ).start()
+            return
+
+        # /repost_now: Beklemeden hemen şimdi yüksek repost/yayılım oranına sahip viral tweeti bul ve gönder
+        if text.startswith("/repost_now"):
+            send_message(
+                chat_id,
+                "🔁 <b>Yüksek Repost Radarı devrede!</b>\n<i>Hem yüksek beğeni hem de diğer tweetlere kıyasla yüksek repost almış viral tweet taranıyor... Lütfen bekleyin...</i>",
+                reply_to_message_id=msg_id,
+                message_thread_id=thread_id
+            )
+            threading.Thread(
+                target=deliver_high_repost_radar_single,
                 args=(chat_id, thread_id, msg_id),
                 daemon=True
             ).start()
