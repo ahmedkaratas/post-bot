@@ -22,7 +22,7 @@ BOOT_LOG_FILE = os.path.join(DATA_DIR, ".boot_log")
 ADMIN_CONFIG_FILE = os.path.join(DATA_DIR, "admin_config.json")
 
 # Kullanıcı /yedek_ata çalıştırdıktan sonra verilen ID buraya yazılabilir (opsiyonel kod sabiti)
-BACKUP_CHAT_ID_DEFAULT = ""
+BACKUP_CHAT_ID_DEFAULT = "-1004409412493"
 ADMIN_CHAT_ID_DEFAULT = ""
 
 _backup_lock = threading.RLock()
@@ -243,8 +243,25 @@ def save_backup_meta(meta: dict):
     except Exception as e:
         print(f"Backup meta kaydetme hatası: {e}")
 
+def send_feedback_message(api_url: str, chat_id: str | int, text: str, thread_id: str | int = None):
+    """Yedekleme durumunu çağıran sohbete iletir."""
+    if not chat_id or not api_url:
+        return
+    payload = {
+        "chat_id": chat_id,
+        "text": text
+    }
+    if thread_id:
+        payload["message_thread_id"] = thread_id
+    try:
+        requests.post(f"{api_url}/sendMessage", json=payload, timeout=10)
+    except Exception as e:
+        print(f"Yedekleme durum mesajı gönderme hatası: {e}")
+
 def create_and_upload_backup(api_url: str, instance_id: str, boot_id: str = "",
-                             is_sigterm: bool = False, force: bool = False) -> tuple[bool, str]:
+                             is_sigterm: bool = False, force: bool = False,
+                             calling_chat_id: str | int = None,
+                             calling_thread_id: str | int = None) -> tuple[bool, str]:
     """
     Yerel verileri zipleyip özel Telegram kanalına gönderir ve mesajı sabitler.
     Güvenlik: Yerel veri son yedekten belirgin küçükse (<%80) yeni yedek yüklemez!
@@ -252,7 +269,10 @@ def create_and_upload_backup(api_url: str, instance_id: str, boot_id: str = "",
     global _has_unsaved_changes
     target_chat = get_backup_chat_id()
     if not target_chat:
-        return False, "Yedek hedef chat ID tanımlanmamış (/yedek_ata komutu ile ayarlayın)."
+        fail_msg = "Yedek hedef chat ID tanımlanmamış (/yedek_ata komutu ile ayarlayın)."
+        if calling_chat_id:
+            send_feedback_message(api_url, calling_chat_id, f"❌ Yedek yüklenemedi: {fail_msg}", calling_thread_id)
+        return False, fail_msg
 
     with _backup_lock:
         local_ledger_count = _count_ledger_lines()
@@ -268,7 +288,10 @@ def create_and_upload_backup(api_url: str, instance_id: str, boot_id: str = "",
                 f"%80'inden daha küçük. Telegram'daki sağlam yedeğin ezilmemesi için yedekleme durduruldu."
             )
             notify_admin(api_url, err_msg)
-            return False, "Güvenlik engeli: Yerel kütük yedeğin %80'inden küçük."
+            fail_msg = "Güvenlik engeli: Yerel kütük yedeğin %80'inden küçük."
+            if calling_chat_id:
+                send_feedback_message(api_url, calling_chat_id, f"❌ Yedek yüklenemedi: {fail_msg}", calling_thread_id)
+            return False, fail_msg
 
         try:
             zip_bytes, manifest = create_backup_zip_bytes(instance_id, boot_id)
@@ -296,13 +319,18 @@ def create_and_upload_backup(api_url: str, instance_id: str, boot_id: str = "",
             ).json()
 
             if not resp.get("ok"):
-                return False, f"Telegram sendDocument hatası: {resp.get('description')}"
+                fail_msg = resp.get('description') or "Telegram sendDocument hatası"
+                if calling_chat_id:
+                    send_feedback_message(api_url, calling_chat_id, f"❌ Yedek yüklenemedi: {fail_msg}", calling_thread_id)
+                return False, f"Telegram sendDocument hatası: {fail_msg}"
 
             new_msg_id = resp["result"]["message_id"]
 
             # Yeni yedeği kanalda sabitle (pin)
+            pin_ok = False
+            pin_desc = ""
             try:
-                requests.post(
+                pin_resp = requests.post(
                     f"{api_url}/pinChatMessage",
                     json={
                         "chat_id": target_chat,
@@ -311,37 +339,64 @@ def create_and_upload_backup(api_url: str, instance_id: str, boot_id: str = "",
                     },
                     timeout=10
                 )
+                try:
+                    pin_data = pin_resp.json()
+                except Exception:
+                    pin_data = {}
+                if pin_resp.status_code == 200 and pin_data.get("ok"):
+                    pin_ok = True
+                else:
+                    pin_desc = pin_data.get("description") or f"HTTP {pin_resp.status_code}"
             except Exception as pin_err:
+                pin_desc = str(pin_err)
                 print(f"Yedek sabitleme (pin) hatası: {pin_err}")
 
-            # Son 5 sabitlemeyi tut, eskisini unpin et
-            pinned_ids = meta.get("pinned_message_ids", [])
-            pinned_ids.append(new_msg_id)
-            if len(pinned_ids) > 5:
-                to_unpin = pinned_ids[:-5]
-                pinned_ids = pinned_ids[-5:]
-                for old_id in to_unpin:
-                    try:
-                        requests.post(
-                            f"{api_url}/unpinChatMessage",
-                            json={"chat_id": target_chat, "message_id": old_id},
-                            timeout=10
-                        )
-                    except Exception:
-                        pass
+            if pin_ok:
+                # Son 5 sabitlemeyi tut, eskisini unpin et
+                pinned_ids = meta.get("pinned_message_ids", [])
+                pinned_ids.append(new_msg_id)
+                if len(pinned_ids) > 5:
+                    to_unpin = pinned_ids[:-5]
+                    pinned_ids = pinned_ids[-5:]
+                    for old_id in to_unpin:
+                        try:
+                            requests.post(
+                                f"{api_url}/unpinChatMessage",
+                                json={"chat_id": target_chat, "message_id": old_id},
+                                timeout=10
+                            )
+                        except Exception:
+                            pass
+                meta["pinned_message_ids"] = pinned_ids
 
             meta["last_backup_time"] = int(time.time())
             meta["last_msg_id"] = new_msg_id
             meta["last_manifest"] = manifest
-            meta["pinned_message_ids"] = pinned_ids
             save_backup_meta(meta)
 
             _has_unsaved_changes = False
-            return True, f"Yedek başarıyla yüklendi ve sabitlendi (Mesaj ID: {new_msg_id})."
+
+            n_records = manifest.get("ledger_lines", local_ledger_count)
+            if pin_ok:
+                success_msg = f"✅ Yedek yüklendi ve sabitlendi ({n_records} kayıt)"
+                if calling_chat_id:
+                    send_feedback_message(api_url, calling_chat_id, success_msg, calling_thread_id)
+                return True, success_msg
+            else:
+                warn_msg = f"⚠️ Yedek yüklendi ama sabitlenemedi: {pin_desc}. Botun bu sohbette mesaj sabitleme yetkisi olduğundan emin olun."
+                if calling_chat_id:
+                    send_feedback_message(api_url, calling_chat_id, warn_msg, calling_thread_id)
+                else:
+                    # Otomatik (zamanlı) yedekte sabitleme başarısızsa admin'e bildir.
+                    notify_admin(api_url, warn_msg)
+                return True, warn_msg
 
         except Exception as e:
+            fail_msg = str(e)
             print(f"Yedek oluşturma/yükleme hatası: {e}")
-            return False, str(e)
+            if calling_chat_id:
+                send_feedback_message(api_url, calling_chat_id, f"❌ Yedek yüklenemedi: {fail_msg}", calling_thread_id)
+            return False, fail_msg
 
 def notify_data_changed(api_url: str, instance_id: str, boot_id: str = "", delay: int = 60):
     """

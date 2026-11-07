@@ -2455,7 +2455,7 @@ def handle_update(update):
                 threading.Thread(
                     target=backup_manager.create_and_upload_backup,
                     args=(API_URL, INSTANCE_ID, CURRENT_BOOT_INFO.get("boot_id", "")),
-                    kwargs={"force": True},
+                    kwargs={"force": True, "calling_chat_id": chat_id, "calling_thread_id": thread_id},
                     daemon=True
                 ).start()
             else:
@@ -2468,7 +2468,7 @@ def handle_update(update):
             threading.Thread(
                 target=backup_manager.create_and_upload_backup,
                 args=(API_URL, INSTANCE_ID, CURRENT_BOOT_INFO.get("boot_id", "")),
-                kwargs={"force": True},
+                kwargs={"force": True, "calling_chat_id": chat_id, "calling_thread_id": thread_id},
                 daemon=True
             ).start()
             return
