@@ -850,7 +850,7 @@ def handle_ig_command(chat_id, msg_id, raw_input, include_comments=True, message
                 edit_message(chat_id, status_msg_id, err_text)
             else:
                 send_message(chat_id, err_text, reply_to_message_id=msg_id, message_thread_id=message_thread_id)
-            return
+            return False
 
         resolved_handle = (main_info or {}).get("author") or author_handle
         resolved_name = (main_info or {}).get("name") or resolved_handle
@@ -1005,6 +1005,8 @@ def handle_ig_command(chat_id, msg_id, raw_input, include_comments=True, message
         if status_msg_id:
             delete_message(chat_id, status_msg_id)
 
+        return True
+
     except Exception as e:
         print(f"İşlem hatası: {e}")
         err_msg = f"❌ İşlem sırasında beklenmeyen bir hata oluştu: {str(e)}"
@@ -1012,6 +1014,7 @@ def handle_ig_command(chat_id, msg_id, raw_input, include_comments=True, message
             edit_message(chat_id, status_msg_id, err_msg)
         else:
             send_message(chat_id, err_msg, reply_to_message_id=msg_id, message_thread_id=message_thread_id)
+        return False
 
 def _old_handle_tweet_images(chat_id, msg_id, text):
     """
@@ -1317,12 +1320,13 @@ def deliver_high_repost_radar_single(chat_id, thread_id=None, reply_to_id=None):
     """Sadece yüksek repost almış viral tweeti bulup gönderir (/repost_now)."""
     cfg = radar_store.get_config()
     min_faves = cfg.get("min_faves", 3000)
-    repost_tweet, rp_total, rp_stats, rp_err = find_high_repost_viral_tweet(min_faves=min_faves)
+    min_rt = cfg.get("min_retweets", 300)
+    repost_tweet, rp_total, rp_stats, rp_err = find_high_repost_viral_tweet(min_faves=min_faves, min_rt=min_rt)
     if not repost_tweet:
         if reply_to_id:
             send_message(
                 chat_id,
-                f"⚠️ <b>Yüksek Repost Radarı:</b> {rp_err or 'Yeni yüksek repost tweet bulunamadı.'}",
+                f"ℹ️ <b>Yüksek Repost Radarı:</b> {rp_err or 'Bu turda şartları geçen tweet yok.'}",
                 reply_to_message_id=reply_to_id,
                 message_thread_id=thread_id
             )
@@ -1331,12 +1335,12 @@ def deliver_high_repost_radar_single(chat_id, thread_id=None, reply_to_id=None):
     rp_id = repost_tweet["id"]
     rp_url = repost_tweet["url"]
     rp_author = repost_tweet.get("author", "X")
-    rp_likes = repost_tweet.get("likes", 0)
-    rp_retweets = int(repost_tweet.get("retweets") or 0)
-    rp_quotes = int(repost_tweet.get("quotes") or 0)
-    rp_total_shares = rp_retweets + rp_quotes
-    rp_rate_pct = rp_stats.get("repost_rate_pct", 0) if rp_stats else 0
-    rp_mult = rp_stats.get("multiplier_vs_avg", 1) if rp_stats else 1
+    rp_likes = rp_stats.get("likes", repost_tweet.get("likes", 0))
+    rp_retweets = rp_stats.get("retweets", repost_tweet.get("retweets", 0))
+    rp_quotes = rp_stats.get("quotes", repost_tweet.get("quotes", 0))
+    rp_views = rp_stats.get("views", repost_tweet.get("views", 0))
+    rp_score = rp_stats.get("score", 0)
+    rp_reason = rp_stats.get("reason", "Dengeli yüksek beğeni ve organik yayılım")
 
     post_id = None
     try:
@@ -1350,29 +1354,28 @@ def deliver_high_repost_radar_single(chat_id, thread_id=None, reply_to_id=None):
                 "likes": rp_likes,
                 "retweets": rp_retweets,
                 "quotes": rp_quotes,
-                "total_reposts": rp_total_shares,
-                "repost_rate_pct": rp_rate_pct,
-                "views": repost_tweet.get("views", 0)
+                "views": rp_views,
+                "score": rp_score
             }
         )
     except Exception as hist_err:
         print(f"Yüksek repost tweet geçmiş kaydetme hatası: {hist_err}")
 
     post_tag = f" #{post_id}" if post_id else ""
-    mult_txt = f"\n📊 <i>Diğer tweetlere göre {rp_mult} kat daha fazla repost yapıldı!</i>" if rp_mult > 1.2 else ""
+    views_part = f" | 👁️ <b>İzlenme:</b> {rp_views:,}" if rp_views else ""
+    metrics_line = f"❤️ <b>Beğeni:</b> {rp_likes:,} | 🔁 <b>RT:</b> {rp_retweets:,} | 💬 <b>Alıntı:</b> {rp_quotes:,}{views_part}"
+    reason_line = f"💡 <b>Neden Seçildi:</b> {rp_reason} (Skor: {rp_score})"
+
     rp_header = (
         f"🔁 <b>Yüksek Repost Seçimi{post_tag}</b>\n"
-        f"❤️ <b>Beğeni:</b> {rp_likes:,} • 🔁 <b>Repost:</b> {rp_total_shares:,} (Yayılım: %{rp_rate_pct})"
-        f"{mult_txt}\n"
+        f"{metrics_line}\n"
+        f"{reason_line}\n"
         f"🔗 <b>Orijinal link:</b> {rp_url}"
     )
     send_message(chat_id, rp_header, reply_to_message_id=reply_to_id, message_thread_id=thread_id)
-    dedup_engine.confirm(rp_id, url=rp_url, author=rp_author, text=repost_tweet.get("text", ""))
-    radar_store.mark_sent(f"rp_{rp_id}", author=rp_author, likes=rp_likes)
-    radar_store.mark_sent(rp_id, author=rp_author, likes=rp_likes)
-    backup_manager.notify_data_changed(API_URL, INSTANCE_ID, boot_id=CURRENT_BOOT_INFO.get("boot_id", ""))
 
-    handle_ig_command(
+    # Tweeti 'gönderildi' (CONFIRM) işaretlemeyi görsel başarıyla hazırlandıktan sonra yap
+    render_ok = handle_ig_command(
         chat_id=chat_id,
         msg_id=None,
         raw_input=rp_url,
@@ -1381,8 +1384,23 @@ def deliver_high_repost_radar_single(chat_id, thread_id=None, reply_to_id=None):
         is_radar=True,
         post_id=post_id
     )
+
+    if render_ok:
+        dedup_engine.confirm(rp_id, url=rp_url, author=rp_author, text=repost_tweet.get("text", ""))
+        radar_store.mark_sent(f"rp_{rp_id}", author=rp_author, likes=rp_likes)
+        radar_store.mark_sent(rp_id, author=rp_author, likes=rp_likes)
+        backup_manager.notify_data_changed(API_URL, INSTANCE_ID, boot_id=CURRENT_BOOT_INFO.get("boot_id", ""))
+    else:
+        # Render başarısız olursa tweeti yakma, claim kilidini iptal et
+        dedup_engine.abort(rp_id, url=rp_url, author=rp_author, text=repost_tweet.get("text", ""), is_definitive_error=True)
+        if post_id:
+            try:
+                history_store.delete_post(post_id)
+            except Exception:
+                pass
+
     send_message(chat_id, "----------------------------------------", message_thread_id=thread_id)
-    return True, None
+    return render_ok, None
 
 def trigger_radar_delivery(chat_id, thread_id=None, reply_to_id=None):
     """
@@ -1436,11 +1454,8 @@ def trigger_radar_delivery(chat_id, thread_id=None, reply_to_id=None):
                 f"🔗 <b>Orijinal link:</b> {tweet_url}"
             )
             send_message(chat_id, header_text, reply_to_message_id=reply_to_id, message_thread_id=thread_id)
-            dedup_engine.confirm(top_std_id, url=tweet_url, author=author, text=top_tweet.get("text", ""))
-            radar_store.mark_sent(top_std_id, author=author, likes=likes)
-            backup_manager.notify_data_changed(API_URL, INSTANCE_ID, boot_id=CURRENT_BOOT_INFO.get("boot_id", ""))
 
-            handle_ig_command(
+            render_ok = handle_ig_command(
                 chat_id=chat_id,
                 msg_id=None,
                 raw_input=tweet_url,
@@ -1449,9 +1464,20 @@ def trigger_radar_delivery(chat_id, thread_id=None, reply_to_id=None):
                 is_radar=True,
                 post_id=post_id
             )
+            if render_ok:
+                dedup_engine.confirm(top_std_id, url=tweet_url, author=author, text=top_tweet.get("text", ""))
+                radar_store.mark_sent(top_std_id, author=author, likes=likes)
+                backup_manager.notify_data_changed(API_URL, INSTANCE_ID, boot_id=CURRENT_BOOT_INFO.get("boot_id", ""))
+                std_sent = True
+            else:
+                dedup_engine.abort(top_std_id, url=tweet_url, author=author, text=top_tweet.get("text", ""), is_definitive_error=True)
+                if post_id:
+                    try:
+                        history_store.delete_post(post_id)
+                    except Exception:
+                        pass
             # İnce ayraç
             send_message(chat_id, "----------------------------------------", message_thread_id=thread_id)
-            std_sent = True
         else:
             print(f"Standart radar sonucu: {err or 'Yeni standart viral tweet bulunamadı.'}")
 
@@ -1471,20 +1497,22 @@ def trigger_radar_delivery(chat_id, thread_id=None, reply_to_id=None):
             print(f"AI radar sonucu: {ai_err or 'Yeni AI viral tweet bulunamadı.'}")
 
         # 3. YÜKSEK REPOST & VİRAL YAYILIM SEÇİMİ (Kullanıcı Talebi 3. Sinyal)
+        min_rt = cfg.get("min_retweets", 300)
         repost_tweet, rp_total, rp_stats, rp_err = find_high_repost_viral_tweet(
             min_faves=min_faves,
+            min_rt=min_rt,
             exclude_ids=[top_std_id, top_ai_id]
         )
         if repost_tweet:
             rp_id = repost_tweet["id"]
             rp_url = repost_tweet["url"]
             rp_author = repost_tweet.get("author", "X")
-            rp_likes = repost_tweet.get("likes", 0)
-            rp_retweets = int(repost_tweet.get("retweets") or 0)
-            rp_quotes = int(repost_tweet.get("quotes") or 0)
-            rp_total_shares = rp_retweets + rp_quotes
-            rp_rate_pct = rp_stats.get("repost_rate_pct", 0) if rp_stats else 0
-            rp_mult = rp_stats.get("multiplier_vs_avg", 1) if rp_stats else 1
+            rp_likes = rp_stats.get("likes", repost_tweet.get("likes", 0))
+            rp_retweets = rp_stats.get("retweets", repost_tweet.get("retweets", 0))
+            rp_quotes = rp_stats.get("quotes", repost_tweet.get("quotes", 0))
+            rp_views = rp_stats.get("views", repost_tweet.get("views", 0))
+            rp_score = rp_stats.get("score", 0)
+            rp_reason = rp_stats.get("reason", "Dengeli yüksek beğeni ve organik yayılım")
 
             post_id = None
             try:
@@ -1498,29 +1526,27 @@ def trigger_radar_delivery(chat_id, thread_id=None, reply_to_id=None):
                         "likes": rp_likes,
                         "retweets": rp_retweets,
                         "quotes": rp_quotes,
-                        "total_reposts": rp_total_shares,
-                        "repost_rate_pct": rp_rate_pct,
-                        "views": repost_tweet.get("views", 0)
+                        "views": rp_views,
+                        "score": rp_score
                     }
                 )
             except Exception as hist_err:
                 print(f"Yüksek repost tweet geçmiş kaydetme hatası: {hist_err}")
 
             post_tag = f" #{post_id}" if post_id else ""
-            mult_txt = f"\n📊 <i>Diğer tweetlere göre {rp_mult} kat daha fazla repost yapıldı!</i>" if rp_mult > 1.2 else ""
+            views_part = f" | 👁️ <b>İzlenme:</b> {rp_views:,}" if rp_views else ""
+            metrics_line = f"❤️ <b>Beğeni:</b> {rp_likes:,} | 🔁 <b>RT:</b> {rp_retweets:,} | 💬 <b>Alıntı:</b> {rp_quotes:,}{views_part}"
+            reason_line = f"💡 <b>Neden Seçildi:</b> {rp_reason} (Skor: {rp_score})"
+
             rp_header = (
                 f"🔁 <b>Yüksek Repost Seçimi{post_tag}</b>\n"
-                f"❤️ <b>Beğeni:</b> {rp_likes:,} • 🔁 <b>Repost:</b> {rp_total_shares:,} (Yayılım: %{rp_rate_pct})"
-                f"{mult_txt}\n"
+                f"{metrics_line}\n"
+                f"{reason_line}\n"
                 f"🔗 <b>Orijinal link:</b> {rp_url}"
             )
             send_message(chat_id, rp_header, reply_to_message_id=reply_to_id, message_thread_id=thread_id)
-            dedup_engine.confirm(rp_id, url=rp_url, author=rp_author, text=repost_tweet.get("text", ""))
-            radar_store.mark_sent(f"rp_{rp_id}", author=rp_author, likes=rp_likes)
-            radar_store.mark_sent(rp_id, author=rp_author, likes=rp_likes)
-            backup_manager.notify_data_changed(API_URL, INSTANCE_ID, boot_id=CURRENT_BOOT_INFO.get("boot_id", ""))
 
-            handle_ig_command(
+            render_ok = handle_ig_command(
                 chat_id=chat_id,
                 msg_id=None,
                 raw_input=rp_url,
@@ -1529,8 +1555,21 @@ def trigger_radar_delivery(chat_id, thread_id=None, reply_to_id=None):
                 is_radar=True,
                 post_id=post_id
             )
+
+            if render_ok:
+                dedup_engine.confirm(rp_id, url=rp_url, author=rp_author, text=repost_tweet.get("text", ""))
+                radar_store.mark_sent(f"rp_{rp_id}", author=rp_author, likes=rp_likes)
+                radar_store.mark_sent(rp_id, author=rp_author, likes=rp_likes)
+                backup_manager.notify_data_changed(API_URL, INSTANCE_ID, boot_id=CURRENT_BOOT_INFO.get("boot_id", ""))
+                repost_sent = True
+            else:
+                dedup_engine.abort(rp_id, url=rp_url, author=rp_author, text=repost_tweet.get("text", ""), is_definitive_error=True)
+                if post_id:
+                    try:
+                        history_store.delete_post(post_id)
+                    except Exception:
+                        pass
             send_message(chat_id, "----------------------------------------", message_thread_id=thread_id)
-            repost_sent = True
         else:
             print(f"Yüksek repost radar sonucu: {rp_err or 'Yeni yüksek repost tweet bulunamadı.'}")
 

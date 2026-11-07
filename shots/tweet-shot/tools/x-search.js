@@ -81,22 +81,39 @@ async function searchTwitter(query, authToken, ct0, maxWait = 45000) {
     ];
     await page.setCookie(...cookiesToSet);
 
-    // SearchTimeline GraphQL yanıtını sayfa açılmadan ÖNCE dinlemeye başla (en hızlı ve garantili yöntem)
-    const responsePromise = page.waitForResponse(
-      (res) => res.url().includes('SearchTimeline') && res.status() === 200,
-      { timeout: 35000 }
-    ).catch(() => null);
+    // SearchTimeline GraphQL yanıtlarını sürekli dinle (sayfalama / scroll cevaplarını da birleştirir)
+    let firstResponseResolved = false;
+    let resolveFirstResponse;
+    const firstResponsePromise = new Promise((resolve) => {
+      resolveFirstResponse = resolve;
+      setTimeout(() => resolve(null), 30000); // 30s fallback
+    });
+
+    page.on('response', async (res) => {
+      try {
+        if (res.url().includes('SearchTimeline') && res.status() === 200) {
+          const json = await res.json();
+          extractTweetsRecursively(json, tweetsFound, seenIds);
+          if (!firstResponseResolved) {
+            firstResponseResolved = true;
+            resolveFirstResponse(true);
+          }
+        }
+      } catch (_) {}
+    });
 
     // Kullanıcının belirttiği f=top arama URL'sine git
     const searchUrl = `https://x.com/search?q=${encodeURIComponent(query)}&f=top`;
     await page.goto(searchUrl, { waitUntil: 'domcontentloaded', timeout: 35000 }).catch(() => {});
 
-    // SearchTimeline yanıtını bekle
-    const searchRes = await responsePromise;
-    if (searchRes) {
+    // İlk GraphQL SearchTimeline cevabını bekle
+    await firstResponsePromise;
+
+    // 2-3 Kez Sayfa Kaydırma (Scroll Pagination) ile GraphQL havuzunu genişlet
+    for (let scrollCount = 0; scrollCount < 3; scrollCount++) {
       try {
-        const json = await searchRes.json();
-        extractTweetsRecursively(json, tweetsFound, seenIds);
+        await page.evaluate(() => window.scrollBy(0, 1600));
+        await new Promise((r) => setTimeout(r, 2000));
       } catch (_) {}
     }
 
@@ -275,18 +292,28 @@ function extractTweetsRecursively(obj, tweetsList, seenIds) {
 
         const vInfo = extractVideoMedia(legacy, tweetObj);
 
+        const pLikes = parseMetricCount(legacy.favorite_count);
+        const pRetweets = parseMetricCount(legacy.retweet_count);
+        const pQuotes = parseMetricCount(legacy.quote_count);
+        const pReplies = parseMetricCount(legacy.reply_count);
+        const pViews = parseMetricCount(tweetObj.views?.count);
+
+        if (tweetsList.length < 3) {
+          console.error(`[x-search schema log] id=${tweetId} likes=${pLikes} rt=${pRetweets} quotes=${pQuotes} views=${pViews}`);
+        }
+
         seenIds.add(tweetId);
         tweetsList.push({
           id: tweetId,
           author: authorHandle,
           name: authorName,
           text: legacy.full_text || '',
-          likes: parseMetricCount(legacy.favorite_count),
-          retweets: parseMetricCount(legacy.retweet_count),
-          replies: parseMetricCount(legacy.reply_count),
-          quotes: parseMetricCount(legacy.quote_count),
+          likes: pLikes,
+          retweets: pRetweets,
+          replies: pReplies,
+          quotes: pQuotes,
           bookmarks: parseMetricCount(legacy.bookmark_count),
-          views: parseMetricCount(tweetObj.views?.count),
+          views: pViews,
           lang: legacy.lang || '',
           createdAt: legacy.created_at || '',
           url: cleanUrl,

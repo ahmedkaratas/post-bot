@@ -6,9 +6,11 @@ en popüler ve henüz gönderilmemiş viral Türkçe tweetleri tespit eder.
 """
 
 import os
+import re
 import json
 import time
 import html
+import math
 import threading
 import subprocess
 from datetime import datetime, timedelta, timezone
@@ -35,10 +37,10 @@ def get_dynamic_since_date(days_back=3):
     dt = datetime.now(timezone.utc) - timedelta(days=days_back)
     return dt.strftime("%Y-%m-%d")
 
-def search_viral_tweets(min_faves=5000, days_back=3):
+def search_viral_tweets(min_faves=5000, days_back=3, min_retweets=None):
     """
     X üzerinde popüler Türkçe tweetleri arar.
-    Sorgu: min_faves:5000 lang:tr since:YYYY-MM-DD
+    Sorgu: min_faves:5000 [min_retweets:300] lang:tr since:YYYY-MM-DD
     Dönüş: {"success": bool, "tweets": list, "error": str}
     """
     auth_token, ct0 = load_twitter_credentials()
@@ -50,7 +52,8 @@ def search_viral_tweets(min_faves=5000, days_back=3):
         }
 
     since_date = get_dynamic_since_date(days_back=days_back)
-    query = f"min_faves:{min_faves} lang:tr since:{since_date}"
+    rt_clause = f" min_retweets:{min_retweets}" if min_retweets is not None else ""
+    query = f"min_faves:{min_faves}{rt_clause} lang:tr since:{since_date}"
 
     # 120 saniyelik önbellek kontrolü (aynı tarama sorgusu için tekrar headless Chrome açmayı engeller)
     now = time.time()
@@ -208,27 +211,62 @@ def find_ai_curated_viral_tweet(min_faves=3000, exclude_id=None):
     # Sert filtre kuralı: AI onaylamadıysa zorlama fallback yapma, bu turu boş geç
     return None, len(unseen), None, "Bu turda AI küratör onayını geçen (Türkçe, reklamsız ve kaliteli) yeni viral tweet bulunamadı."
 
-def find_high_repost_viral_tweet(min_faves=3000, exclude_ids=None):
+BAIT_OR_SPAM_PATTERNS = [
+    r"\b(?:rt|retweet)\b",
+    r"çekiliş",
+    r"takip et",
+    r"kazan\b",
+    r"hediye",
+    r"beğen.+paylaş",
+    r"bizi takip",
+    r"rt eden"
+]
+
+def contains_bait_or_spam_terms(text: str) -> tuple[bool, str]:
+    if not text:
+        return False, ""
+    t = text.lower()
+    for p in BAIT_OR_SPAM_PATTERNS:
+        m = re.search(p, t)
+        if m:
+            return True, m.group(0)
+    return False, ""
+
+def find_high_repost_viral_tweet(min_faves=3000, min_rt=300, exclude_ids=None):
     """
-    Havuzdaki tweetler arasından hem yüksek beğeni almış hem de diğer tweetlere göre
-    belirgin şekilde yüksek repost (retweet + alıntı) sayısına ve yayılım oranına sahip
-    en viral tweeti bulur (3. Sinyal: Yüksek Repost / Viral Yayılım).
-    exclude_ids: Standart veya AI tarafından seçilmiş tweet ID'leri (çakışmayı önler).
-    Dönüş: (top_repost_tweet, total_candidates, stats_dict, err_msg)
+    Havuzdaki tweetler arasından hem yüksek beğeni hem de yüksek retweet almış,
+    organik yayılım gösteren en viral tweeti tespit eder (Sorun 3).
+    - İkili sorgu (min_faves + min_retweets ve min_faves) ile GraphQL yanıtları birleştirilir.
+    - Beğeni ve retweet yüzdelik sıralarının geometrik ortalaması hesaplanır.
+    - Alt eşikler: beğeni >= min_faves, retweet >= min_rt (karşılanmazsa fallback yapılmaz).
+    - RT/beğeni oranı 0.03-0.35 aralığında ödüllendirilir; >0.35 ise yem/bot şüphesiyle cezalandırılır.
+    - 'rt', 'retweet', 'çekiliş', 'takip et' gibi yem ifadeleri içerenler elenir.
+    - Alıntı sayısı puana düşük ağırlıkla katılır.
     """
     exclude_set = {str(eid).strip() for eid in (exclude_ids or []) if eid}
 
-    res = search_viral_tweets(min_faves=min_faves)
-    if not res.get("success"):
-        return None, 0, None, res.get("error", "Bilinmeyen arama hatası")
+    # 1. İkili Arama: Hem min_retweets filtreli hem de genel popüler havuzu tara
+    res_targeted = search_viral_tweets(min_faves=min_faves, min_retweets=min_rt)
+    tweets_targeted = res_targeted.get("tweets", []) if res_targeted.get("success") else []
 
-    raw_tweets = res.get("tweets", [])
-    if not raw_tweets:
-        return None, 0, None, "Arama kriterlerine uyan tweet bulunamadı."
+    res_general = search_viral_tweets(min_faves=min_faves)
+    tweets_general = res_general.get("tweets", []) if res_general.get("success") else []
 
-    # 1. Daha önce iletilmemiş olanları filtrele (5 katmanlı tekilleştirme motoru)
+    # İki aramanın sonuçlarını tekilleştirerek birleştir
+    combined_tweets = []
+    seen_ids = set()
+    for tw in tweets_targeted + tweets_general:
+        tid = str(tw.get("id", "")).strip()
+        if tid and tid not in seen_ids:
+            seen_ids.add(tid)
+            combined_tweets.append(tw)
+
+    if not combined_tweets:
+        return None, 0, None, f"Arama kriterlerine (min {min_faves:,} beğeni) uyan tweet bulunamadı."
+
+    # 2. Gönderilmiş olanları 5 katmanlı motorla filtrele
     unseen = []
-    for t in raw_tweets:
+    for t in combined_tweets:
         t_id = str(t.get("id", "")).strip()
         t_url = t.get("url", "")
         t_text = t.get("text", "")
@@ -239,11 +277,11 @@ def find_high_repost_viral_tweet(min_faves=3000, exclude_ids=None):
             unseen.append(t)
 
     if not unseen:
-        return None, len(raw_tweets), None, "Tüm tweetler daha önce iletilmiş."
+        return None, len(combined_tweets), None, "Tüm tweetler daha önce iletilmiş."
 
     from video_curator_agent import detect_ad_or_spam
 
-    # 2. Sert filtreler: Promoted/reklam, yabancı dil ve spam olanları ele
+    # 3. Sert filtreler: Sponsorlu, yabancı dil, reklam ve 'yem/çekiliş/takip et' temizliği
     valid_unseen = []
     for t in unseen:
         if t.get("is_promoted"):
@@ -251,58 +289,86 @@ def find_high_repost_viral_tweet(min_faves=3000, exclude_ids=None):
         lang = (t.get("lang") or "").strip().lower()
         if lang and lang != "tr":
             continue
-        if detect_ad_or_spam(t.get("text", ""))[0]:
+        t_text = t.get("text", "")
+        if detect_ad_or_spam(t_text)[0]:
+            continue
+        has_bait, bait_term = contains_bait_or_spam_terms(t_text)
+        if has_bait:
             continue
         valid_unseen.append(t)
 
     if not valid_unseen:
-        return None, len(unseen), None, "Sert filtrelere uyan yüksek repost adayı bulunamadı."
+        return None, len(unseen), None, "Sert filtrelere ve yem/çekiliş kurallarına uyan tweet bulunamadı."
 
-    # 3. Havuz ortalamasını hesapla (diğer tweetlere göre kıyaslama için)
-    all_reposts = [int(t.get("retweets") or 0) + int(t.get("quotes") or 0) for t in valid_unseen]
-    avg_reposts = sum(all_reposts) / max(len(all_reposts), 1)
-
-    # 4. Adayları 'Yüksek Beğeni + Yüksek Repost / Yayılım Oranı' formülüne göre puanla
-    scored_candidates = []
+    # 4. Alt Eşikler: Hem beğeni >= min_faves hem de retweet >= min_rt olmak ZORUNDA
+    candidates = []
     for t in valid_unseen:
         likes = int(t.get("likes") or 0)
         retweets = int(t.get("retweets") or 0)
         quotes = int(t.get("quotes") or 0)
-        total_reposts = retweets + quotes
-        repost_rate = total_reposts / max(likes, 1)
+        views = int(t.get("views") or 0)
 
-        # En azından kayda değer bir repost sayısı olmalı (minimum 30 repost)
-        if total_reposts < 30:
-            continue
+        if likes >= min_faves and retweets >= min_rt:
+            candidates.append({
+                "tweet": t,
+                "likes": likes,
+                "retweets": retweets,
+                "quotes": quotes,
+                "views": views
+            })
 
-        multiplier = total_reposts / max(avg_reposts, 1)
+    # Hiç aday alt eşikleri geçemezse: ZORLAMA YEDEK SEÇME, NET MESAJ DÖN
+    if not candidates:
+        return None, len(valid_unseen), None, f"Bu turda şartları (min {min_faves:,} beğeni, min {min_rt:,} retweet) geçen tweet yok."
 
-        # Kompozit Virallik Puanı:
-        # - total_reposts ağırlığı: her repost 2 puan
-        # - repost_rate ağırlığı: yüksek yayılım oranını (%10, %20 vb.) ödüllendirir
-        # - likes taban puanı: yüksek beğeniyi de gözetir
-        composite_score = (total_reposts * 2.0) + (repost_rate * 10000.0) + (likes * 0.15)
+    # 5. Geometrik Yüzdelik Sıralama (Percentile Ranking & Geometric Mean)
+    N = len(candidates)
+    scored = []
+    for cand in candidates:
+        c_likes = cand["likes"]
+        c_rt = cand["retweets"]
+        c_quotes = cand["quotes"]
 
-        scored_candidates.append({
-            "tweet": t,
-            "score": composite_score,
-            "total_reposts": total_reposts,
-            "retweets": retweets,
-            "quotes": quotes,
-            "likes": likes,
-            "repost_rate_pct": round(repost_rate * 100, 1),
-            "multiplier": round(multiplier, 1)
-        })
+        # Havuzdaki yüzdelik sıralar (0.05 - 1.0)
+        cnt_likes = sum(1 for c in candidates if c["likes"] <= c_likes)
+        pct_likes = max(0.05, cnt_likes / N)
 
-    if not scored_candidates:
-        return None, len(valid_unseen), None, "Yeterli repost / retweet sayısına (min 30) ulaşmış aday bulunamadı."
+        cnt_rt = sum(1 for c in candidates if c["retweets"] <= c_rt)
+        pct_rt = max(0.05, cnt_rt / N)
 
-    # En yüksek kompozit repost puanına göre sırala
-    scored_candidates.sort(key=lambda x: x["score"], reverse=True)
-    best_candidate = scored_candidates[0]
-    best_tweet = best_candidate["tweet"]
+        # Geometrik Ortalama: İki metriğin de yüksek olması şartını matematiksel zorlar
+        geo_score = math.sqrt(pct_likes * pct_rt) * 100.0
 
-    # Kalıcı kilit koy (claim)
+        # RT / Beğeni Yayılım Oranı
+        ratio = c_rt / max(c_likes, 1)
+
+        # 0.03 - 0.35 aralığı ödüllendirilir; >0.35 çekiliş/bot şüphesiyle cezalandırılır
+        if 0.03 <= ratio <= 0.35:
+            ratio_mult = 1.15
+            reason = f"Dengeli beğeni ve %{ratio * 100:.1f} organik yayılım"
+        elif ratio > 0.35:
+            ratio_mult = 0.40  # %60 Ceza
+            reason = f"Aşırı RT oranı (%{ratio * 100:.1f} > 0.35, ceza uygulandı)"
+        else:
+            ratio_mult = 0.85
+            reason = f"Düşük retweet oranı (%{ratio * 100:.1f})"
+
+        # Alıntı sayısını düşük ağırlıkla puana kat
+        quote_bonus = min(8.0, (c_quotes / max(c_likes, 1)) * 50.0)
+
+        final_score = round((geo_score * ratio_mult) + quote_bonus, 1)
+
+        cand["geo_score"] = round(geo_score, 1)
+        cand["final_score"] = final_score
+        cand["ratio_pct"] = round(ratio * 100, 1)
+        cand["reason"] = reason
+        scored.append(cand)
+
+    scored.sort(key=lambda x: x["final_score"], reverse=True)
+    best_cand = scored[0]
+    best_tweet = best_cand["tweet"]
+
+    # İçeriğe claim kilidi koy
     dedup_engine.claim(
         best_tweet.get("id"),
         url=best_tweet.get("url"),
@@ -311,17 +377,17 @@ def find_high_repost_viral_tweet(min_faves=3000, exclude_ids=None):
     )
 
     stats = {
-        "score": best_candidate["score"],
-        "total_reposts": best_candidate["total_reposts"],
-        "retweets": best_candidate["retweets"],
-        "quotes": best_candidate["quotes"],
-        "likes": best_candidate["likes"],
-        "repost_rate_pct": best_candidate["repost_rate_pct"],
-        "multiplier_vs_avg": best_candidate["multiplier"],
-        "avg_reposts_in_batch": round(avg_reposts, 1)
+        "score": best_cand["final_score"],
+        "geo_score": best_cand["geo_score"],
+        "likes": best_cand["likes"],
+        "retweets": best_cand["retweets"],
+        "quotes": best_cand["quotes"],
+        "views": best_cand["views"],
+        "ratio_pct": best_cand["ratio_pct"],
+        "reason": best_cand["reason"]
     }
 
-    return best_tweet, len(scored_candidates), stats, None
+    return best_tweet, len(scored), stats, None
 
 if __name__ == "__main__":
     print("Testing load_twitter_credentials:")

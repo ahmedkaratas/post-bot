@@ -41,6 +41,7 @@ DEFAULT_STATE = {
     "is_active": _get_default_radar_active(),
     "interval_minutes": int(os.getenv("RADAR_INTERVAL_MINUTES", "120")),
     "min_faves": int(os.getenv("RADAR_MIN_FAVES", "5000")),
+    "min_retweets": int(os.getenv("RADAR_MIN_RETWEETS", "300")),
     "last_run_timestamp": 0,
     "sent_tweets": {}  # tweet_id -> {"sent_at": timestamp, "author": ..., "likes": ...}
 }
@@ -99,6 +100,7 @@ class RadarStore:
                 "is_active": is_active,
                 "interval_minutes": self.data.get("interval_minutes", int(os.getenv("RADAR_INTERVAL_MINUTES", "120"))),
                 "min_faves": self.data.get("min_faves", int(os.getenv("RADAR_MIN_FAVES", "5000"))),
+                "min_retweets": self.data.get("min_retweets", int(os.getenv("RADAR_MIN_RETWEETS", "300"))),
                 "last_run_timestamp": self.data.get("last_run_timestamp", 0),
                 "sent_count": len(self.data.get("sent_tweets", {}))
             }
@@ -123,6 +125,12 @@ class RadarStore:
         with self._lock:
             self.data = self._load()
             self.data["min_faves"] = max(100, int(min_faves))
+            self._save()
+
+    def set_min_retweets(self, min_retweets: int):
+        with self._lock:
+            self.data = self._load()
+            self.data["min_retweets"] = max(10, int(min_retweets))
             self._save()
 
     def set_interval(self, minutes: int):
