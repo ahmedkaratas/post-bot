@@ -124,12 +124,10 @@ def calculate_ad_penalty(text: str) -> int:
 
 # Google Gemini API doğrulanmış aktif model basamakları:
 GEMINI_MODELS_CASCADE = [
-    "gemini-2.5-flash",
-    "gemini-2.5-flash-lite",
-    "gemini-1.5-flash",
-    "gemini-2.0-flash",
-    "gemini-flash-latest",
-    "gemini-flash-lite-latest"
+    "gemini-3.6-flash",
+    "gemini-3.5-flash",
+    "gemini-flash-lite-latest",
+    "gemini-flash-latest"
 ]
 
 def evaluate_video_with_ai(title: str, text: str, author: str = "", platform: str = "reels", metrics: dict = None, thumbnail_url: str = None) -> dict:

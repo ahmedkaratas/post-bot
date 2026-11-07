@@ -1798,6 +1798,19 @@ def handle_update(update):
     chat_type = message.get("chat", {}).get("type", "private")
     is_group = chat_type in ("group", "supergroup", "channel")
 
+    # Otomatik hedef koruma: Konteyner yeniden başladığında radar hedefleri varsayılana dönmüşse,
+    # gruptan atılan ilk komutla aktif odayı ve konuyu otomatik olarak radara bağla
+    if is_group:
+        try:
+            cfg = radar_store.get_config()
+            if cfg.get("target_chat_id") in (-1004409412493, None):
+                radar_store.set_target(chat_id, thread_id, title=message.get("chat", {}).get("title"))
+            r_cfg = reels_store.get_config()
+            if r_cfg.get("target_chat_id") in (-1004409412493, None):
+                reels_store.set_target(chat_id, thread_id, title=message.get("chat", {}).get("title"))
+        except Exception:
+            pass
+
     # Metin komutları
     if "text" in message:
         text = message["text"].strip()
