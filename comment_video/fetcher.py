@@ -312,17 +312,18 @@ def fetch_instagram_comments(shortcode: str, min_likes: int = 10000) -> tuple:
         else:
             print("[Fetcher] Instagram API yorum döndürmedi veya oturum geçersiz, yt-dlp fallback'ine geçiliyor...")
 
-    # 2. Fallback: Anonim / Logged-out yt-dlp çekimi
+    # 2. Fallback: yt-dlp çekimi (Çerez varsa çerezli dener, hata alırsa otomatik çerezsiz dener)
     post_url = f"https://www.instagram.com/p/{shortcode}/"
+    cookie_header = ["--add-header", f"Cookie: sessionid={sid}"] if sid else None
     comments = []
     try:
-        data = _run_ytdlp_json(post_url)
+        data = _run_ytdlp_json(post_url, cookie_header=cookie_header)
         raw_comments = data.get("comments") or []
 
         # Eğer /p/ linki yorum döndürmediyse /reel/ linkini de dene
         if not raw_comments:
             reel_url = f"https://www.instagram.com/reel/{shortcode}/"
-            data = _run_ytdlp_json(reel_url)
+            data = _run_ytdlp_json(reel_url, cookie_header=cookie_header)
             raw_comments = data.get("comments") or []
 
         for c in raw_comments:
@@ -349,8 +350,9 @@ def fetch_instagram_comments(shortcode: str, min_likes: int = 10000) -> tuple:
     # Beğeniye göre azalan sırala
     comments.sort(key=lambda x: x["likes"], reverse=True)
     high_likes = [c for c in comments if c["likes"] >= min_likes]
+    is_anon = not bool(sid)
     if len(high_likes) >= 5:
-        return high_likes[:8], True
+        return high_likes[:8], is_anon
 
     # 10k üstü azsa veya beğeniler anonim çekilmişse, geçerli temiz yorumları al
     combined = list(high_likes)
@@ -359,7 +361,7 @@ def fetch_instagram_comments(shortcode: str, min_likes: int = 10000) -> tuple:
             combined.append(c)
         if len(combined) >= 8:
             break
-    return combined, True
+    return combined, is_anon
 
 def fetch_post_and_comments(url: str, min_likes: int = 10000, working_dir: str = None) -> dict:
     """
