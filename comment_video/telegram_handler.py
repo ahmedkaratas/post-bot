@@ -188,7 +188,7 @@ def handle_comment_video_message(
             f"• <b>Instagram Oturumu:</b> {ig_status} (Güncellemek için: DM'den <code>/set_ig &lt;sessionid&gt;</code>)\n"
             "• <b>Ses Motoru:</b> Microsoft Edge-TTS (Ahmet / Doğal Türkçe)\n"
             "• <b>Platform Desteği:</b> Instagram (Reels & Post) + Twitter/X (Video & Tweet)\n\n"
-            "🎬 <i>Video üretmek için bu odaya bir Instagram veya Twitter/X linki atmanız yeterlidir!</i>"
+            "🎬 <i>Video üretmek için linki eşik değeriyle atabilirsiniz (Örn: <code>https://... -500</code> veya <code>https://... - 1000</code>)!</i>"
         )
         send_msg_func(chat_id, msg, reply_to_message_id=msg_id, message_thread_id=message_thread_id)
         return True
@@ -222,7 +222,33 @@ def handle_comment_video_message(
         return False
 
     target_url = link_match.group(0)
-    min_likes = get_min_likes()
+
+    # 5. Beğeni Eşiği Kontrolü (-500 veya - 500)
+    thresh_match = re.search(r"(?:^|\s)-\s*(\d+(?:[.,]\d+)?\s*[kKmMbB]?)", t)
+    if not thresh_match:
+        warn_msg = (
+            "⚠️ <b>Lütfen Beğeni Eşiğini Belirtin!</b>\n\n"
+            "Yorumların filtrelenebilmesi için linkin yanına çekilmesini istediğiniz minimum beğeni sayısını eklemelisiniz.\n\n"
+            "<b>Örnek Kullanım:</b>\n"
+            f"• <code>{target_url} -500</code>\n"
+            f"• <code>{target_url} - 1000</code>\n"
+            f"• <code>{target_url} - 10k</code>\n"
+            f"• <code>{target_url} -0</code> <i>(Tüm yorumları almak için)</i>\n\n"
+            "💡 <i>Belirttiğiniz sayının üzerindeki en popüler yorumlar çoktan aza doğru sıralanır (Maksimum 8 yorum).</i>"
+        )
+        send_msg_func(chat_id, warn_msg, reply_to_message_id=msg_id, message_thread_id=message_thread_id)
+        return True
+
+    min_likes = parse_stat_number(thresh_match.group(1))
+    if min_likes is None or min_likes < 0:
+        send_msg_func(
+            chat_id,
+            "⚠️ <b>Geçersiz Beğeni Sayısı:</b> Lütfen geçerli bir sayı girin (Örn: <code>-500</code>, <code>- 1000</code>, <code>- 10k</code>).",
+            reply_to_message_id=msg_id,
+            message_thread_id=message_thread_id
+        )
+        return True
+
     auto_mode = get_auto_generate()
 
     # İlk bekleme mesajını gönder
@@ -254,7 +280,13 @@ def handle_comment_video_message(
 
             comments = fetch_res.get("comments") or []
             if not comments:
-                no_c_text = "⚠️ <b>Uygun Yorum Bulunamadı:</b>\nBu gönderide seçilen kriterlere uygun yorum bulunamadı."
+                no_c_text = (
+                    f"⚠️ <b>Uygun Yorum Bulunamadı:</b>\n"
+                    f"Bu gönderide <b>{min_likes:,}</b> ve üzeri beğeni almış yorum bulunamadı.\n\n"
+                    f"💡 <i>Daha düşük bir eşikle tekrar deneyebilirsiniz:</i>\n"
+                    f"• <code>{target_url} -100</code>\n"
+                    f"• <code>{target_url} -0</code>"
+                )
                 if status_msg_id and edit_msg_func:
                     edit_msg_func(chat_id, status_msg_id, no_c_text)
                 else:

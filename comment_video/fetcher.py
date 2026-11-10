@@ -127,13 +127,9 @@ def fetch_twitter_comments(tweet_id: str, min_likes: int = 10000) -> list:
     # Beğeniye göre azalan sırala
     comments.sort(key=lambda x: x["likes"], reverse=True)
     
-    # 10.000 ve üzeri olanları filtrele
+    # min_likes ve üzeri olanları filtrele (yukarıdan aşağı sıralı, maksimum 8 adet)
     high_likes = [c for c in comments if c["likes"] >= min_likes]
-    if high_likes:
-        return high_likes
-        
-    # Eğer 10k üstü yoksa en popüler ilk 6'yı dön (kullanıcıyı cevapsız bırakmamak için)
-    return comments[:6]
+    return high_likes[:8]
 
 def _run_ytdlp_json(url: str, cookie_header: list = None) -> dict:
     """yt-dlp ile JSON verisini çeker. Çerez hatası olursa otomatik çerezsiz dener."""
@@ -305,10 +301,7 @@ def fetch_instagram_comments(shortcode: str, min_likes: int = 10000) -> tuple:
             # Beğeniye göre azalan sırala
             api_comments.sort(key=lambda x: x["likes"], reverse=True)
             high_likes = [c for c in api_comments if c["likes"] >= min_likes]
-            if high_likes:
-                return high_likes[:8], False
-            # 10k üstü bulunamazsa en popüler yorumları dön
-            return api_comments[:8], False
+            return high_likes[:8], False
         else:
             print("[Fetcher] Instagram API yorum döndürmedi veya oturum geçersiz, yt-dlp fallback'ine geçiliyor...")
 
@@ -351,17 +344,7 @@ def fetch_instagram_comments(shortcode: str, min_likes: int = 10000) -> tuple:
     comments.sort(key=lambda x: x["likes"], reverse=True)
     high_likes = [c for c in comments if c["likes"] >= min_likes]
     is_anon = not bool(sid)
-    if len(high_likes) >= 5:
-        return high_likes[:8], is_anon
-
-    # 10k üstü azsa veya beğeniler anonim çekilmişse, geçerli temiz yorumları al
-    combined = list(high_likes)
-    for c in comments:
-        if c not in combined:
-            combined.append(c)
-        if len(combined) >= 8:
-            break
-    return combined, is_anon
+    return high_likes[:8], is_anon
 
 def fetch_post_and_comments(url: str, min_likes: int = 10000, working_dir: str = None) -> dict:
     """
