@@ -33,6 +33,10 @@ from dedup_engine import dedup_engine
 import photoroom_engine
 import history_curator
 from topic_manager import topic_manager, VALID_ROLES
+from comment_video.telegram_handler import (
+    handle_comment_video_message,
+    handle_comment_video_callback
+)
 
 BOT_TOKEN = os.getenv("BOT_TOKEN", "").strip()
 
@@ -177,7 +181,7 @@ def send_chat_action(chat_id, action="upload_photo", message_thread_id=None):
     except Exception:
         pass
 
-def send_message(chat_id, text, reply_to_message_id=None, message_thread_id=None):
+def send_message(chat_id, text, reply_to_message_id=None, message_thread_id=None, reply_markup=None):
     try:
         payload = {
             "chat_id": chat_id,
@@ -188,6 +192,8 @@ def send_message(chat_id, text, reply_to_message_id=None, message_thread_id=None
             payload["reply_to_message_id"] = reply_to_message_id
         if message_thread_id:
             payload["message_thread_id"] = message_thread_id
+        if reply_markup:
+            payload["reply_markup"] = reply_markup
         resp = requests.post(f"{API_URL}/sendMessage", json=payload, timeout=15)
         if resp.status_code != 200:
             print(f"Telegram sendMessage hatası ({resp.status_code}): {resp.text}")
@@ -200,7 +206,7 @@ def send_message(chat_id, text, reply_to_message_id=None, message_thread_id=None
         print(f"Mesaj gönderme hatası: {e}")
         return None
 
-def edit_message(chat_id, message_id, text):
+def edit_message(chat_id, message_id, text, reply_markup=None):
     try:
         payload = {
             "chat_id": chat_id,
@@ -208,6 +214,8 @@ def edit_message(chat_id, message_id, text):
             "text": text,
             "parse_mode": "HTML"
         }
+        if reply_markup is not None:
+            payload["reply_markup"] = reply_markup
         resp = requests.post(f"{API_URL}/editMessageText", json=payload, timeout=10)
         if resp.status_code != 200 and "can't parse entities" in resp.text:
             payload.pop("parse_mode", None)
@@ -215,6 +223,49 @@ def edit_message(chat_id, message_id, text):
         return resp
     except Exception as e:
         print(f"Mesaj güncelleme hatası: {e}")
+        return None
+
+def answer_callback_query(callback_query_id, text=None, show_alert=False):
+    try:
+        payload = {"callback_query_id": callback_query_id}
+        if text:
+            payload["text"] = text
+            payload["show_alert"] = show_alert
+        return requests.post(f"{API_URL}/answerCallbackQuery", json=payload, timeout=10)
+    except Exception:
+        return None
+
+def send_video_file(chat_id, video_path, caption=None, message_thread_id=None, reply_to_message_id=None):
+    try:
+        payload = {"chat_id": chat_id}
+        if caption:
+            payload["caption"] = caption
+            payload["parse_mode"] = "HTML"
+        if message_thread_id:
+            payload["message_thread_id"] = message_thread_id
+        if reply_to_message_id:
+            payload["reply_to_message_id"] = reply_to_message_id
+
+        filename = os.path.basename(video_path)
+        with open(video_path, "rb") as vf:
+            resp = requests.post(
+                f"{API_URL}/sendVideo",
+                data=payload,
+                files={"video": (filename, vf, "video/mp4")},
+                timeout=120
+            )
+        if resp.status_code != 200 and "can't parse entities" in resp.text:
+            payload.pop("parse_mode", None)
+            with open(video_path, "rb") as vf:
+                resp = requests.post(
+                    f"{API_URL}/sendVideo",
+                    data=payload,
+                    files={"video": (filename, vf, "video/mp4")},
+                    timeout=120
+                )
+        return resp
+    except Exception as e:
+        print(f"[Telegram] send_video_file hatası: {e}")
         return None
 
 def delete_message(chat_id, message_id):
@@ -2112,6 +2163,18 @@ def handle_dekupe_command(chat_id, msg_id, target_msg, opt_text="", message_thre
         )
 
 def handle_update(update):
+    # 0. Callback Query kontrolü (Yorum seçimi ve video üretimi butonları)
+    callback_query = update.get("callback_query")
+    if callback_query:
+        if handle_comment_video_callback(
+            callback_query,
+            edit_msg_func=edit_message,
+            send_video_func=send_video_file,
+            answer_cb_func=answer_callback_query,
+            delete_msg_func=delete_message
+        ):
+            return
+
     message = update.get("message") or update.get("channel_post")
     if not message:
         return
@@ -2189,6 +2252,22 @@ def handle_update(update):
     # Metin komutları
     if "text" in message:
         text = message["text"].strip()
+
+        # Yorum Videosu Odası ('commentvideo') veya ilgili komutlar
+        is_cv_room = is_group and (current_role == "commentvideo")
+        if is_cv_room or text.startswith("/video") or text.startswith("/yorum_min"):
+            if handle_comment_video_message(
+                chat_id=chat_id,
+                msg_id=msg_id,
+                text=text,
+                message_thread_id=thread_id,
+                send_msg_func=send_message,
+                edit_msg_func=edit_message,
+                send_video_func=send_video_file,
+                delete_msg_func=delete_message
+            ):
+                return
+
         if text.startswith("/start") or text.startswith("/help"):
             welcome = (
                 "👋 <b>Merhaba! Instagram 1080×1350 Post Botuna Hoş Geldin.</b>\n\n"
@@ -2229,6 +2308,11 @@ def handle_update(update):
                 " • <code>/ornekler</code> - Altın kütüphanedeki örnekleri ve yapay zeka analiz notlarını listeler.\n"
                 " • <code>/not #12 &lt;not&gt;</code> - Postun neden tuttu/tutmadığına dair analiz notunu manuel düzenler.\n"
                 " • <code>/sil #12</code> - Hatalı kaydı geçmişten siler.\n\n"
+                "🎙️ <b>Komik Yorum Videosu (Oda: 'commentvideo'):</b>\n"
+                " • Instagram veya Twitter/X linki at; 10K+ beğenili yorumları bulur, videoyu duraklatıp seslendirerek kurgular!\n"
+                " • <code>/video_min 5000</code> - Minimum beğeni eşiğini ayarlar.\n"
+                " • <code>/video_status</code> - Yorum videosu motoru ayarlarını gösterir.\n"
+                " • <code>/video_auto on/off</code> - Otomatik tek tık modunu açar veya kapatır.\n\n"
                 "🛍️ <b>PhotoRoom Dekupe & 1500×2000 Beyaz Zemin (/d):</b>\n"
                 " • Fotoğraf atarken açıklama kısmına <code>/d</code> yazın veya fotoğrafa <code>/d</code> ile yanıt verin;\n"
                 " • Arka planı stüdyo kalitesinde silip 1500×2000 saf beyaz tuvale yerleştirir.\n"
