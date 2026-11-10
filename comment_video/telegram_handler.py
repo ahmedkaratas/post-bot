@@ -90,12 +90,14 @@ def build_session_keyboard(session_id: str, comments: list, selected_indices: li
     
     return {"inline_keyboard": buttons}
 
-def build_session_message_text(comments: list, selected_indices: list, min_likes: int, url: str) -> str:
+def build_session_message_text(comments: list, selected_indices: list, min_likes: int, url: str, is_anonymous: bool = False) -> str:
     """Kullanıcıya gösterilecek şık yorum listesi metnini oluşturur."""
+    filter_desc = "⚠️ <b>Filtre:</b> Anonim Önizleme (Instagram oturumu yok)" if is_anonymous else f"• <b>Filtre:</b> En az {min_likes:,} beğeni (En Popülerler Sıralı 🟢)"
+
     lines = [
-        "🎬 <b>Popüler Yorumlar Tespit Edildi!</b>",
+        "🎬 <b>Yorumlar Tespit Edildi!</b>",
         f"• <b>Gönderi:</b> <code>{escape(url[:45])}...</code>",
-        f"• <b>Filtre:</b> En az {min_likes:,} beğeni",
+        filter_desc,
         f"• <b>Seçilen:</b> {len(selected_indices)} / {len(comments)} yorum\n"
     ]
     
@@ -113,6 +115,10 @@ def build_session_message_text(comments: list, selected_indices: list, min_likes
             
         lines.append(f"{prefix} {check} <b>@{handle}</b>{likes_tag}:\n   <i>\"{t_short}\"</i>\n")
         
+    if is_anonymous:
+        lines.append(
+            "💡 <i>Instagram oturumu aktif olmadığında popüler yorumlar ve beğeni sayıları gizlenir. Gerçek 10K+ en popüler yorumlar için bota özel mesajdan (DM) <code>/set_ig &lt;sessionid&gt;</code> gönderebilirsiniz.</i>\n"
+        )
     lines.append("👇 <i>Numaralara basarak yorumları değiştirebilir veya doğrudan 'Videoyu Hemen Oluştur' butonuna basabilirsiniz:</i>")
     return "\n".join(lines)
 
@@ -162,12 +168,24 @@ def handle_comment_video_message(
         min_l = cfg.get("min_likes", 10000)
         auto_g = "🟢 Açık (Direkt Üret)" if cfg.get("auto_generate") else "⚪ Kapalı (Butonlu / Seçimli)"
         pause_d = cfg.get("pause_duration", 0.40)
+
+        # Instagram oturum durumu
+        ig_status = "🔴 Tanımlı Değil"
+        try:
+            from session_manager import session_manager
+            sid = session_manager.get_instagram_session_id()
+            if sid:
+                valid, msg_v = session_manager.verify_instagram_session(sid)
+                ig_status = "🟢 Aktif & Doğrulandı" if valid else f"⚠️ {msg_v}"
+        except Exception:
+            pass
         
         msg = (
             "⚙️ <b>Yorum Videosu Motoru Ayarları</b>\n\n"
             f"• <b>Min Beğeni Eşiği:</b> <code>{min_l:,}</code> beğeni (Değiştirmek için: <code>/video_min 5000</code>)\n"
             f"• <b>Otomatik Mod:</b> {auto_g} (Değiştirmek için: <code>/video_auto on/off</code>)\n"
             f"• <b>Yorum Duraklama Payı:</b> <code>{pause_d:.2f} sn</code> (Akıcı kesintisiz akış)\n"
+            f"• <b>Instagram Oturumu:</b> {ig_status} (Güncellemek için: DM'den <code>/set_ig &lt;sessionid&gt;</code>)\n"
             "• <b>Ses Motoru:</b> Microsoft Edge-TTS (Ahmet / Doğal Türkçe)\n"
             "• <b>Platform Desteği:</b> Instagram (Reels & Post) + Twitter/X (Video & Tweet)\n\n"
             "🎬 <i>Video üretmek için bu odaya bir Instagram veya Twitter/X linki atmanız yeterlidir!</i>"
@@ -271,6 +289,7 @@ def handle_comment_video_message(
             # İnteraktif / Hibrit Mod: Kullanıcıya yorumları ve butonları sun
             session_id = f"cv_{uuid.uuid4().hex[:8]}"
             default_selected = list(range(min(5, len(comments))))
+            is_anonymous = fetch_res.get("is_anonymous", False)
             with _session_lock:
                 CV_SESSIONS[session_id] = {
                     "url": target_url,
@@ -278,12 +297,13 @@ def handle_comment_video_message(
                     "comments": comments,
                     "selected": default_selected,
                     "min_likes": min_likes,
+                    "is_anonymous": is_anonymous,
                     "chat_id": chat_id,
                     "thread_id": message_thread_id,
                     "status_msg_id": status_msg_id
                 }
 
-            msg_text = build_session_message_text(comments, default_selected, min_likes, target_url)
+            msg_text = build_session_message_text(comments, default_selected, min_likes, target_url, is_anonymous=is_anonymous)
             keyboard = build_session_keyboard(session_id, comments, default_selected)
 
             if status_msg_id and edit_msg_func:
@@ -349,7 +369,7 @@ def handle_comment_video_callback(
             status_txt = "Eklendi" if idx in session["selected"] else "Çıkarıldı"
             answer_cb_func(cb_id, text=f"Yorum #{idx+1} {status_txt}")
 
-        new_text = build_session_message_text(session["comments"], session["selected"], session["min_likes"], session["url"])
+        new_text = build_session_message_text(session["comments"], session["selected"], session["min_likes"], session["url"], is_anonymous=session.get("is_anonymous", False))
         new_kb = build_session_keyboard(session_id, session["comments"], session["selected"])
         if edit_msg_func:
             edit_msg_func(chat_id, message_id, new_text, reply_markup=new_kb)
@@ -361,7 +381,7 @@ def handle_comment_video_callback(
             session["selected"] = list(range(min(5, len(session["comments"]))))
         if answer_cb_func:
             answer_cb_func(cb_id, text="İlk 5 popüler yorum seçildi.")
-        new_text = build_session_message_text(session["comments"], session["selected"], session["min_likes"], session["url"])
+        new_text = build_session_message_text(session["comments"], session["selected"], session["min_likes"], session["url"], is_anonymous=session.get("is_anonymous", False))
         new_kb = build_session_keyboard(session_id, session["comments"], session["selected"])
         if edit_msg_func:
             edit_msg_func(chat_id, message_id, new_text, reply_markup=new_kb)

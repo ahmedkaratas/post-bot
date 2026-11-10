@@ -165,45 +165,161 @@ def _run_ytdlp_json(url: str, cookie_header: list = None) -> dict:
             print(f"[Fetcher] yt-dlp çalıştırma hatası: {e}")
     return {}
 
-def fetch_instagram_comments(shortcode: str, min_likes: int = 10000) -> list:
+def shortcode_to_media_id(shortcode: str) -> str:
+    """Instagram shortcode (Örn: DcWvIayM23B) değerini sayısal media_id değerine çevirir."""
+    alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"
+    media_id = 0
+    for char in shortcode:
+        if char in alphabet:
+            media_id = (media_id * 64) + alphabet.index(char)
+    return str(media_id)
+
+def _fetch_instagram_comments_api(media_id: str, session_id: str) -> list:
+    """
+    Instagram Mobile Private API kullanarak gönderinin gerçek popüler yorumlarını çeker.
+    Top comments, gerçek comment_like_count değerleri ve sayfalama içerir.
+    """
+    url = f"https://i.instagram.com/api/v1/media/{media_id}/comments/?can_support_threading=true"
+    headers = {
+        "User-Agent": "Instagram 300.0.0.18.110 (iPhone14,3; iOS 16_6; en_US; en-US; scale=3.00; 1170x2532; 513072223) AppleWebKit/420+",
+        "Cookie": f"sessionid={session_id};",
+        "Accept-Language": "tr-TR,en-US;q=0.9",
+        "X-IG-App-ID": "936619743392459"
+    }
+
+    all_comments = []
+    seen_ids = set()
+    max_id = None
+    page = 0
+    max_pages = 4  # En fazla 4 sayfa (yaklaşık 80-120 yorum) tara
+
+    while page < max_pages:
+        page += 1
+        params = {}
+        if max_id:
+            params["max_id"] = str(max_id)
+
+        try:
+            resp = requests.get(url, headers=headers, params=params, timeout=12)
+            if resp.status_code != 200:
+                print(f"[Fetcher] Instagram API yanıtı: HTTP {resp.status_code}")
+                break
+            data = resp.json()
+            raw_comments = data.get("comments") or []
+            if not raw_comments:
+                break
+
+            for c in raw_comments:
+                cid = str(c.get("pk") or c.get("id"))
+                if cid in seen_ids:
+                    continue
+                seen_ids.add(cid)
+
+                text = (c.get("text") or "").strip()
+                if not is_valid_comment(text):
+                    continue
+
+                user = c.get("user") or {}
+                author_handle = user.get("username") or "kullanici"
+                author_name = user.get("full_name") or author_handle
+                avatar_url = user.get("profile_pic_url") or ""
+                likes = int(c.get("comment_like_count") or 0)
+
+                all_comments.append({
+                    "id": cid,
+                    "author_name": author_name,
+                    "author_handle": author_handle,
+                    "avatar_url": avatar_url,
+                    "text": text,
+                    "likes": likes,
+                    "platform": "instagram"
+                })
+
+                # Yanıtlanan alt yorumlar (preview_child_comments) varsa onları da kontrol et
+                child_comments = c.get("preview_child_comments") or []
+                for cc in child_comments:
+                    cc_id = str(cc.get("pk") or cc.get("id"))
+                    if cc_id in seen_ids:
+                        continue
+                    seen_ids.add(cc_id)
+                    cc_text = (cc.get("text") or "").strip()
+                    if not is_valid_comment(cc_text):
+                        continue
+                    cc_user = cc.get("user") or {}
+                    all_comments.append({
+                        "id": cc_id,
+                        "author_name": cc_user.get("full_name") or cc_user.get("username") or "kullanici",
+                        "author_handle": cc_user.get("username") or "kullanici",
+                        "avatar_url": cc_user.get("profile_pic_url") or "",
+                        "text": cc_text,
+                        "likes": int(cc.get("comment_like_count") or 0),
+                        "platform": "instagram"
+                    })
+
+            has_more = data.get("has_more_comments") or data.get("has_more_headload_comments")
+            next_max_id = data.get("next_max_id")
+            if not has_more or not next_max_id:
+                break
+            max_id = next_max_id
+        except Exception as e:
+            print(f"[Fetcher] Instagram API sayfa çekme hatası: {e}")
+            break
+
+    return all_comments
+
+def fetch_instagram_comments(shortcode: str, min_likes: int = 10000) -> tuple:
     """
     Instagram gönderisindeki yorumları çeker.
-    Varsayılan 10.000+ beğeni alanları filtreler, yoksa en popüler/komik yorumları döner.
+    1. Oturum çerezi (sessionid) varsa doğrudan Instagram Mobile API ile gerçek beğeni sayılarını ve popüler yorumları çeker.
+    2. Oturum yoksa veya geçersizse yt-dlp anonim önizleme fallback'ini kullanır (is_anonymous=True).
+    Dönüş: (comments: list, is_anonymous: bool)
     """
+    media_id = shortcode_to_media_id(shortcode)
+
+    # 1. Öncelik: Aktif oturum ile Instagram Mobile API üzerinden gerçek popüler yorumları çek
+    sid = None
+    try:
+        from session_manager import session_manager
+        sid = session_manager.get_instagram_session_id()
+    except Exception:
+        pass
+
+    if sid:
+        print(f"[Fetcher] Aktif Instagram oturumu ile API sorgusu yapılıyor (media_id: {media_id})...")
+        api_comments = _fetch_instagram_comments_api(media_id, sid)
+        if api_comments:
+            # Beğeniye göre azalan sırala
+            api_comments.sort(key=lambda x: x["likes"], reverse=True)
+            high_likes = [c for c in api_comments if c["likes"] >= min_likes]
+            if high_likes:
+                return high_likes[:8], False
+            # 10k üstü bulunamazsa en popüler yorumları dön
+            return api_comments[:8], False
+        else:
+            print("[Fetcher] Instagram API yorum döndürmedi veya oturum geçersiz, yt-dlp fallback'ine geçiliyor...")
+
+    # 2. Fallback: Anonim / Logged-out yt-dlp çekimi
     post_url = f"https://www.instagram.com/p/{shortcode}/"
     comments = []
     try:
-        # Oturum çerezi varsa ekle
-        cookie_header = []
-        try:
-            from session_manager import session_manager
-            sid = session_manager.get_instagram_session_id()
-            if sid:
-                # Sadece geçerli oturum ise header olarak ekle
-                valid, _ = session_manager.verify_instagram_session(sid)
-                if valid:
-                    cookie_header = ["--add-header", f"Cookie: sessionid={sid}"]
-        except Exception:
-            pass
-
-        data = _run_ytdlp_json(post_url, cookie_header=cookie_header)
+        data = _run_ytdlp_json(post_url)
         raw_comments = data.get("comments") or []
-        
+
         # Eğer /p/ linki yorum döndürmediyse /reel/ linkini de dene
         if not raw_comments:
             reel_url = f"https://www.instagram.com/reel/{shortcode}/"
-            data = _run_ytdlp_json(reel_url, cookie_header=cookie_header)
+            data = _run_ytdlp_json(reel_url)
             raw_comments = data.get("comments") or []
-        
+
         for c in raw_comments:
             text = (c.get("text") or "").strip()
             # Anlamsız spam, klavye randomu ve reklam filtrelemesi
             if not is_valid_comment(text):
                 continue
-                
+
             author = c.get("author") or "kullanici"
             likes = c.get("like_count") or 0
-            
+
             comments.append({
                 "id": c.get("id"),
                 "author_name": author,
@@ -220,8 +336,8 @@ def fetch_instagram_comments(shortcode: str, min_likes: int = 10000) -> list:
     comments.sort(key=lambda x: x["likes"], reverse=True)
     high_likes = [c for c in comments if c["likes"] >= min_likes]
     if len(high_likes) >= 5:
-        return high_likes[:10]
-    
+        return high_likes[:8], True
+
     # 10k üstü azsa veya beğeniler anonim çekilmişse, geçerli temiz yorumları al
     combined = list(high_likes)
     for c in comments:
@@ -229,7 +345,7 @@ def fetch_instagram_comments(shortcode: str, min_likes: int = 10000) -> list:
             combined.append(c)
         if len(combined) >= 8:
             break
-    return combined
+    return combined, True
 
 def fetch_post_and_comments(url: str, min_likes: int = 10000, working_dir: str = None) -> dict:
     """
@@ -241,33 +357,36 @@ def fetch_post_and_comments(url: str, min_likes: int = 10000, working_dir: str =
        "platform": "twitter" | "instagram",
        "media_path": str,
        "is_video": bool,
-       "comments": list
+       "comments": list,
+       "is_anonymous": bool
     }
     """
     if not working_dir:
         working_dir = tempfile.mkdtemp(prefix="comment_fetch_")
-        
+
     platform, post_id = extract_platform_and_id(url)
     if not platform:
         return {"error": "Desteklenmeyen URL formatı. Lütfen geçerli bir Instagram veya Twitter/X linki verin."}
 
     print(f"[Fetcher] Algılandı: {platform.upper()} ID: {post_id} | Min Beğeni: {min_likes}")
-    
+
     # 1. Medyayı İndir
     media_path, is_video = download_media(url, working_dir)
     if not media_path:
         return {"error": "Gönderideki video/görsel indirilemedi."}
-        
+
     # 2. Yorumları Çek
+    is_anonymous = False
     if platform == "twitter":
         comments = fetch_twitter_comments(post_id, min_likes=min_likes)
     else:
-        comments = fetch_instagram_comments(post_id, min_likes=min_likes)
-        
+        comments, is_anonymous = fetch_instagram_comments(post_id, min_likes=min_likes)
+
     return {
         "platform": platform,
         "post_id": post_id,
         "media_path": media_path,
         "is_video": is_video,
-        "comments": comments
+        "comments": comments,
+        "is_anonymous": is_anonymous
     }
