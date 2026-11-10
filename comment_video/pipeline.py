@@ -29,7 +29,10 @@ def create_funny_comments_video(
     output_path: str = None,
     min_likes: int = None,
     pre_fetched_data: dict = None,
-    progress_callback = None
+    progress_callback = None,
+    tts_engine: str = None,
+    tts_voice: str = None,
+    eleven_api_key: str = None
 ) -> dict:
     """
     Tüm süreci uçtan uca çalıştırır:
@@ -95,7 +98,7 @@ def create_funny_comments_video(
 
             # 2. TTS Sesi
             audio_mp3 = os.path.join(work_dir, f"audio_{idx:02d}.mp3")
-            dur = generate_speech(c["text"], audio_mp3)
+            dur = generate_speech(c["text"], audio_mp3, voice=tts_voice, engine=tts_engine, eleven_api_key=eleven_api_key)
 
             prepared_data.append({
                 "card_png": card_png,
