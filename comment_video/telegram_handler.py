@@ -11,6 +11,7 @@ telegram_handler.py: Telegram botu ile Yorum Videosu motorunu (pipeline) bağlay
 import os
 import re
 import time
+import uuid
 import threading
 from html import escape
 
@@ -103,13 +104,14 @@ def build_session_message_text(comments: list, selected_indices: list, min_likes
         prefix = num_emojis[i] if i < len(num_emojis) else f"{i+1}."
         check = "✅" if i in selected_indices else "▫️"
         handle = escape(c.get("author_handle") or "kullanici")
-        likes_str = format_likes(c.get("likes") or 0)
+        likes_val = c.get("likes") or 0
+        likes_tag = f" (❤️ {format_likes(likes_val)})" if likes_val > 10 else ""
         # Yorum metnini ilk 75 karakterle sınırla
         t_short = escape(c.get("text", "")[:75].replace("\n", " "))
         if len(c.get("text", "")) > 75:
             t_short += "..."
             
-        lines.append(f"{prefix} {check} <b>@{handle}</b> (❤️ {likes_str}):\n   <i>\"{t_short}\"</i>\n")
+        lines.append(f"{prefix} {check} <b>@{handle}</b>{likes_tag}:\n   <i>\"{t_short}\"</i>\n")
         
     lines.append("👇 <i>Numaralara basarak yorumları değiştirebilir veya doğrudan 'Videoyu Hemen Oluştur' butonuna basabilirsiniz:</i>")
     return "\n".join(lines)
@@ -267,7 +269,7 @@ def handle_comment_video_message(
                 return
 
             # İnteraktif / Hibrit Mod: Kullanıcıya yorumları ve butonları sun
-            session_id = f"cv_{int(time.time())}_{chat_id}_{msg_id}"
+            session_id = f"cv_{uuid.uuid4().hex[:8]}"
             default_selected = list(range(min(5, len(comments))))
             with _session_lock:
                 CV_SESSIONS[session_id] = {

@@ -107,10 +107,11 @@ def render_comment_card(
     line_height = 42
     header_height = avatar_size
     text_height = len(wrapped_lines) * line_height
-    footer_height = 36
-    spacing = 20
+    has_likes_badge = bool(like_count and like_count > 10)
+    footer_height = 42 if has_likes_badge else 0
+    spacing = 18
 
-    card_height = padding_y + header_height + spacing + text_height + spacing + footer_height + padding_y
+    card_height = padding_y + header_height + spacing + text_height + (spacing + footer_height if has_likes_badge else 0) + padding_y
 
     # Şeffaf ana tuval (Gölge için fazladan boşluk bırakılır)
     margin = 30
@@ -155,21 +156,22 @@ def render_comment_card(
         line_y = body_y + (i * line_height)
         c_draw.text((padding_x, line_y), line, font=font_text, fill=(245, 245, 247, 255))
 
-    # 6. Footer (Beğeni Kısmı - Kırmızı Kalp + Sayı)
-    footer_y = body_y + text_height + spacing
-    likes_str = f"❤️  {format_likes(like_count)} Beğeni"
-    
-    # Beğeni hap kutucuğu (Pill badge)
-    pill_w = 210
-    pill_h = 36
-    c_draw.rounded_rectangle(
-        [padding_x, footer_y, padding_x + pill_w, footer_y + pill_h],
-        radius=18,
-        fill=(255, 59, 92, 35),
-        outline=(255, 59, 92, 100),
-        width=1
-    )
-    c_draw.text((padding_x + 18, footer_y + 6), likes_str, font=font_likes, fill=(255, 75, 105, 255))
+    # 6. Footer (Beğeni Kısmı - Sadece gerçek/anlamlı beğeni > 10 ise çiz)
+    if has_likes_badge:
+        footer_y = body_y + text_height + spacing
+        likes_str = f"❤️  {format_likes(like_count)}"
+
+        # Kristal netliğinde, yüksek kontrastlı OLED hap kutucuğu
+        pill_w = 175
+        pill_h = 38
+        c_draw.rounded_rectangle(
+            [padding_x, footer_y, padding_x + pill_w, footer_y + pill_h],
+            radius=19,
+            fill=(32, 36, 44, 240),
+            outline=(65, 72, 85, 220),
+            width=1
+        )
+        c_draw.text((padding_x + 16, footer_y + 6), likes_str, font=font_likes, fill=(255, 255, 255, 255))
 
     # Kartı tuvalin ortasına yapıştır
     canvas.paste(card_img, (margin, margin), mask=card_img)

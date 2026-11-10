@@ -15,6 +15,36 @@ import tempfile
 
 YT_DLP_BIN = shutil.which("yt-dlp") or ("/Users/qwerty/.local/bin/yt-dlp" if os.path.exists("/Users/qwerty/.local/bin/yt-dlp") else "yt-dlp")
 
+def is_valid_comment(text: str) -> bool:
+    """Yorumun okunabilir, geçerli ve seslendirmeye uygun olup olmadığını denetler."""
+    if not text:
+        return False
+    t = text.strip()
+    # Çok kısa (< 4 karakter) veya aşırı uzun (> 220 karakter) yorumları ele
+    if len(t) < 4 or len(t) > 220:
+        return False
+
+    # URL veya reklam linki içeriyorsa ele
+    if "http://" in t or "https://" in t or ".com" in t or ".net" in t:
+        return False
+
+    # Herhangi bir kelime 20 karakterden uzunsa (klavye randomu / harf spam) ele
+    for word in t.split():
+        if not word.startswith("@") and len(word) > 20:
+            return False
+
+    # 6 veya daha fazla ardışık sessiz harf (Türkçe klavye spam: SÇDÇWĞ, asdfghj, zxcvbn vb.)
+    if re.search(r"[bcçdfgğhjklmnprsştvyzxwqBCÇDFGĞHJKLMNPRSŞTVYZXWQ]{6,}", t):
+        return False
+
+    # Yorum sadece @etiketlerden veya sadece emojilerden ibaretse ele
+    t_clean = re.sub(r"@[A-Za-z0-9_.\-]+", "", t)
+    t_clean = re.sub(r"[\U00010000-\U0010ffff\u2600-\u27bf\ufe00-\ufe0f\u200d\u200c]", "", t_clean).strip()
+    if len(t_clean) < 3:
+        return False
+
+    return True
+
 def extract_platform_and_id(url: str):
     """Verilen URL'den platformu ve içerik ID'sini tespit eder."""
     u = (url or "").strip()
@@ -78,8 +108,8 @@ def fetch_twitter_comments(tweet_id: str, min_likes: int = 10000) -> list:
                 author = r.get("author") or {}
                 text = (r.get("text") or "").strip()
                 
-                # Temizleme
-                if len(text) < 5 or text.startswith("http"):
+                # Temizleme ve spam kontrolü
+                if not is_valid_comment(text):
                     continue
                     
                 comments.append({
@@ -107,14 +137,25 @@ def fetch_twitter_comments(tweet_id: str, min_likes: int = 10000) -> list:
 
 def fetch_instagram_comments(shortcode: str, min_likes: int = 10000) -> list:
     """
-    Instagram gönderisindeki yorumları yt-dlp ile çeker.
+    Instagram gönderisindeki yorumları çeker.
     Varsayılan 10.000+ beğeni alanları filtreler, yoksa en popüler/komik yorumları döner.
     """
     post_url = f"https://www.instagram.com/p/{shortcode}/"
     comments = []
     try:
+        # Oturum çerezi varsa ekle
+        cookie_header = []
+        try:
+            from session_manager import session_manager
+            sid = session_manager.get_instagram_session_id()
+            if sid:
+                cookie_header = ["--add-header", f"Cookie: sessionid={sid}"]
+        except Exception:
+            pass
+
         cmd = [
             YT_DLP_BIN,
+            *cookie_header,
             "--write-comments",
             "--dump-json",
             post_url
@@ -125,11 +166,8 @@ def fetch_instagram_comments(shortcode: str, min_likes: int = 10000) -> list:
         
         for c in raw_comments:
             text = (c.get("text") or "").strip()
-            # Anlamsız harf spamlerini (örn: SÇDÇWĞ...) filtrele
-            if len(text) < 4:
-                continue
-            # Eğer 20 karakterden uzun ve içinde boşluk yoksa random harf spamidir, atla
-            if len(text) > 20 and " " not in text:
+            # Anlamsız spam, klavye randomu ve reklam filtrelemesi
+            if not is_valid_comment(text):
                 continue
                 
             author = c.get("author") or "kullanici"
@@ -153,7 +191,7 @@ def fetch_instagram_comments(shortcode: str, min_likes: int = 10000) -> list:
     if len(high_likes) >= 5:
         return high_likes[:10]
     
-    # 10k üstü azsa, listeyi en popüler diğer yorumlarla en az 5-8 yoruma tamamla
+    # 10k üstü azsa veya beğeniler anonim çekilmişse, geçerli temiz yorumları al
     combined = list(high_likes)
     for c in comments:
         if c not in combined:
