@@ -10,12 +10,9 @@ import os
 import re
 import asyncio
 import subprocess
-import requests
 import edge_tts
 
-DEFAULT_VOICE = "tr-TR-AhmetNeural"  # Alternatif Edge: tr-TR-EmelNeural
-ELEVENLABS_DEFAULT_VOICE = "TX3LPaxmHKxFdv7VOQHJ"  # Liam (Energetic Social Media Creator)
-# Alternatif ElevenLabs: "pNInz6obpgDQGcFmaJgB" (Adam - Tok & Karizmatik Erkek Sesi)
+DEFAULT_VOICE = "tr-TR-AhmetNeural"  # Alternatif: tr-TR-EmelNeural
 
 def clean_text_for_speech(text: str) -> str:
     """
@@ -42,40 +39,6 @@ async def _synthesize_edge(text: str, voice: str, output_path: str):
     communicate = edge_tts.Communicate(text, voice)
     await communicate.save(output_path)
 
-def _synthesize_elevenlabs(text: str, voice_id: str, output_path: str, api_key: str = None) -> bool:
-    """ElevenLabs Multilingual v2 modeli ile Türkçe doğal ses üretir."""
-    key = api_key or os.getenv("ELEVENLABS_API_KEY")
-    if not key:
-        return False
-
-    vid = voice_id or os.getenv("ELEVENLABS_VOICE_ID") or ELEVENLABS_DEFAULT_VOICE
-    url = f"https://api.elevenlabs.io/v1/text-to-speech/{vid}"
-    headers = {
-        "xi-api-key": key,
-        "Content-Type": "application/json"
-    }
-    payload = {
-        "text": text,
-        "model_id": "eleven_multilingual_v2",
-        "voice_settings": {
-            "stability": 0.45,
-            "similarity_boost": 0.80,
-            "style": 0.20,
-            "use_speaker_boost": True
-        }
-    }
-    try:
-        resp = requests.post(url, json=payload, headers=headers, timeout=20)
-        if resp.status_code == 200:
-            with open(output_path, "wb") as f:
-                f.write(resp.content)
-            return True
-        else:
-            print(f"[TTS] ElevenLabs hatası: HTTP {resp.status_code} - {resp.text[:100]}")
-    except Exception as e:
-        print(f"[TTS] ElevenLabs bağlantı hatası: {e}")
-    return False
-
 def get_audio_duration(audio_path: str) -> float:
     """ffprobe ile ses dosyasının tam süresini saniye cinsinden döner."""
     try:
@@ -90,7 +53,7 @@ def get_audio_duration(audio_path: str) -> float:
         return 3.0
 
 def trim_trailing_silence(audio_path: str):
-    """Dosya sonundaki boş sessizliği sıyırır."""
+    """Edge-TTS'in dosya sonuna eklediği ~1.1 saniyelik boş sessizliği sıyırır."""
     ffmpeg_bin = "/opt/homebrew/bin/ffmpeg" if os.path.exists("/opt/homebrew/bin/ffmpeg") else "ffmpeg"
     tmp_trimmed = audio_path + ".trimmed.mp3"
     cmd = [
@@ -106,45 +69,21 @@ def trim_trailing_silence(audio_path: str):
     except Exception as e:
         print(f"[TTS] Sessizlik kırpma hatası: {e}")
 
-def generate_speech(
-    text: str,
-    output_path: str,
-    voice: str = None,
-    engine: str = None,
-    eleven_api_key: str = None
-) -> float:
+def generate_speech(text: str, output_path: str, voice: str = DEFAULT_VOICE) -> float:
     """
     Verilen metni temizler (@mention ve emojileri çıkarır), seslendirir,
     sonundaki boş sessizliği atar, output_path dosyasına kaydeder
     ve üretilen sesin tam süresini (float saniye) döner.
-    engine: 'elevenlabs' veya 'edge' (varsayılan: ELEVENLABS_API_KEY varsa 'elevenlabs' yoksa 'edge')
     """
     clean_text = clean_text_for_speech(text)
     if not clean_text or clean_text == "...":
         clean_text = "..."
 
     os.makedirs(os.path.dirname(os.path.abspath(output_path)), exist_ok=True)
-
-    # Engine tespiti
-    active_engine = engine or os.getenv("TTS_ENGINE")
-    if not active_engine:
-        active_engine = "elevenlabs" if (eleven_api_key or os.getenv("ELEVENLABS_API_KEY")) else "edge"
-
-    success = False
-    if active_engine == "elevenlabs":
-        v_id = voice or os.getenv("ELEVENLABS_VOICE_ID") or ELEVENLABS_DEFAULT_VOICE
-        success = _synthesize_elevenlabs(clean_text, v_id, output_path, api_key=eleven_api_key)
-        if not success:
-            print("[TTS] ElevenLabs başarısız oldu veya anahtar yok, Edge-TTS fallback devreye giriyor...")
-
-    if not success:
-        active_engine = "edge"
-        edge_v = voice if (voice and voice.startswith("tr-TR-")) else DEFAULT_VOICE
-        asyncio.run(_synthesize_edge(clean_text, edge_v, output_path))
-
+    asyncio.run(_synthesize_edge(clean_text, voice, output_path))
     trim_trailing_silence(output_path)
     duration = get_audio_duration(output_path)
-    print(f"[TTS] Ses üretildi ({duration:.2f}s, motor: {active_engine}) ['{clean_text[:40]}...']: {output_path}")
+    print(f"[TTS] Ses üretildi ({duration:.2f}s) ['{clean_text[:40]}...']: {output_path}")
     return duration
 
 if __name__ == "__main__":
