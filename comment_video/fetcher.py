@@ -135,6 +135,36 @@ def fetch_twitter_comments(tweet_id: str, min_likes: int = 10000) -> list:
     # Eğer 10k üstü yoksa en popüler ilk 6'yı dön (kullanıcıyı cevapsız bırakmamak için)
     return comments[:6]
 
+def _run_ytdlp_json(url: str, cookie_header: list = None) -> dict:
+    """yt-dlp ile JSON verisini çeker. Çerez hatası olursa otomatik çerezsiz dener."""
+    cmd = [
+        YT_DLP_BIN,
+        *(cookie_header or []),
+        "--write-comments",
+        "--dump-json",
+        url
+    ]
+    try:
+        out = subprocess.check_output(cmd, stderr=subprocess.DEVNULL)
+        return json.loads(out)
+    except Exception as e:
+        if cookie_header:
+            print(f"[Fetcher] Çerezli istek başarısız oldu ({e}), çerezsiz deneniyor...")
+            try:
+                clean_cmd = [
+                    YT_DLP_BIN,
+                    "--write-comments",
+                    "--dump-json",
+                    url
+                ]
+                out = subprocess.check_output(clean_cmd, stderr=subprocess.DEVNULL)
+                return json.loads(out)
+            except Exception as e2:
+                print(f"[Fetcher] Çerezsiz istek de başarısız: {e2}")
+        else:
+            print(f"[Fetcher] yt-dlp çalıştırma hatası: {e}")
+    return {}
+
 def fetch_instagram_comments(shortcode: str, min_likes: int = 10000) -> list:
     """
     Instagram gönderisindeki yorumları çeker.
@@ -149,20 +179,21 @@ def fetch_instagram_comments(shortcode: str, min_likes: int = 10000) -> list:
             from session_manager import session_manager
             sid = session_manager.get_instagram_session_id()
             if sid:
-                cookie_header = ["--add-header", f"Cookie: sessionid={sid}"]
+                # Sadece geçerli oturum ise header olarak ekle
+                valid, _ = session_manager.verify_instagram_session(sid)
+                if valid:
+                    cookie_header = ["--add-header", f"Cookie: sessionid={sid}"]
         except Exception:
             pass
 
-        cmd = [
-            YT_DLP_BIN,
-            *cookie_header,
-            "--write-comments",
-            "--dump-json",
-            post_url
-        ]
-        out = subprocess.check_output(cmd, stderr=subprocess.DEVNULL)
-        data = json.loads(out)
+        data = _run_ytdlp_json(post_url, cookie_header=cookie_header)
         raw_comments = data.get("comments") or []
+        
+        # Eğer /p/ linki yorum döndürmediyse /reel/ linkini de dene
+        if not raw_comments:
+            reel_url = f"https://www.instagram.com/reel/{shortcode}/"
+            data = _run_ytdlp_json(reel_url, cookie_header=cookie_header)
+            raw_comments = data.get("comments") or []
         
         for c in raw_comments:
             text = (c.get("text") or "").strip()
