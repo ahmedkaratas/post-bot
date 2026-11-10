@@ -2142,7 +2142,7 @@ def handle_update(update):
             pass
         else:
             # 3. Komutun veya içeriğin ait olduğu doğru rolü belirle
-            cmd_role = topic_manager.determine_command_role(text, message)
+            cmd_role = topic_manager.determine_command_role(text, message, current_role=current_role)
 
             # Oda yönetim komutları (/oda_ata, /oda, /odalar, /oda_sil) her zaman serbest
             if cmd_role == "management":

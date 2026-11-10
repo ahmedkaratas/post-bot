@@ -18,6 +18,7 @@ VALID_ROLES = {
     "tweet": "ViralTweet (Sadece viral tweet radarı)",
     "photo": "SadeceFotoğraf (Sadece 1080x1350 tuval görsel işleme)",
     "link": "Link & Paket (/url, /url2, /ig ve doğrudan X linkleri)",
+    "commentvideo": "Yorum Videosu (Instagram / X komik yorum seslendirmeli video üretimi)",
     "general": "General (Genel yönetim, durum, oturum ve yedek)",
     "test": "Test/Deneme (Tüm komutlar serbest, filtresiz)",
     "notes": "Notlar & Geçmiş (/gecmis, /tuttu, /not, /sil vb.)",
@@ -29,6 +30,7 @@ ROLE_EMOJIS = {
     "tweet": "🛰️",
     "photo": "📸",
     "link": "🔗",
+    "commentvideo": "🎙️",
     "general": "⚙️",
     "test": "🧪",
     "notes": "📝",
@@ -169,10 +171,10 @@ class TopicManager:
             data = self._load()
             return dict(data.get("roles", {}))
 
-    def determine_command_role(self, text: str, message: dict = None) -> str:
+    def determine_command_role(self, text: str, message: dict = None, current_role: str = None) -> str:
         """
         Mesaj veya komutun ait olduğu doğru oda rolünü tespit eder.
-        Dönüş: 'reels', 'tweet', 'photo', 'link', 'general', 'test', 'notes', 'management' veya None
+        Dönüş: 'reels', 'tweet', 'photo', 'link', 'commentvideo', 'general', 'test', 'notes', 'management' veya None
         """
         t = (text or "").strip()
         msg = message or {}
@@ -182,7 +184,18 @@ class TopicManager:
                 t.startswith("/odalar") or t.startswith("/oda_sil")):
             return "management"
 
-        # 2. Viral Reels / Video Komutları
+        # 2. Yorum Videosu Komutları & Odaya Özel Linkler
+        is_ig_link = bool(re.search(r"https?://(?:www\.)?instagram\.com/(?:p|reel|reels)/[a-zA-Z0-9_\-]+", t))
+        is_x_link = bool(re.search(r"https?://(?:twitter\.com|x\.com|fixupx\.com|vxtwitter\.com|fxtwitter\.com)/[a-zA-Z0-9_]+/status/\d+", t))
+
+        if t.startswith("/video") or t.startswith("/komik") or t.startswith("/commentvideo"):
+            return "commentvideo"
+
+        # Eğer bulunulan oda commentvideo ise, gönderilen Instagram veya X linkleri bu odaya aittir
+        if current_role == "commentvideo" and (is_ig_link or is_x_link):
+            return "commentvideo"
+
+        # 3. Viral Reels / Video Komutları
         if (t.startswith("/reels_now") or t.startswith("/reels_start") or
                 t.startswith("/reels_stop") or t.startswith("/reels_status") or
                 t.startswith("/reels_interval") or t.startswith("/reels_plays") or
@@ -190,7 +203,7 @@ class TopicManager:
                 t.startswith("/reels_config") or t.startswith("/reels_target")):
             return "reels"
 
-        # 3. Viral Tweet Radarı Komutları
+        # 4. Viral Tweet Radarı Komutları
         if (t.startswith("/radar_now") or t.startswith("/ai_radar_now") or
                 t.startswith("/repost_now") or t.startswith("/radar_start") or
                 t.startswith("/radar_stop") or t.startswith("/radar_status") or
@@ -198,11 +211,11 @@ class TopicManager:
                 t.startswith("/radar_config") or t.startswith("/radar_target")):
             return "tweet"
 
-        # 4. Link & Tam Paket Komutları
+        # 5. Link & Tam Paket Komutları (Eski X linkleri ve /ig /url)
         if (t.startswith("/url") or t.startswith("/url2") or
                 t.startswith("/ig") or t.startswith("/img")):
             return "link"
-        if re.search(r"https?://(?:twitter\.com|x\.com|fixupx\.com|vxtwitter\.com|fxtwitter\.com)/[a-zA-Z0-9_]+/status/\d+", t):
+        if is_x_link:
             return "link"
 
         # 5. Notlar & Geçmiş & Geri Bildirim Komutları
