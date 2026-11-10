@@ -179,10 +179,24 @@ def _fetch_instagram_comments_api(media_id: str, session_id: str) -> list:
     Instagram Mobile Private API kullanarak gönderinin gerçek popüler yorumlarını çeker.
     Top comments, gerçek comment_like_count değerleri ve sayfalama içerir.
     """
+    uid = ""
+    try:
+        import urllib.parse
+        decoded = urllib.parse.unquote(session_id)
+        parts = decoded.split(":")
+        if parts and parts[0].isdigit():
+            uid = parts[0]
+    except Exception:
+        pass
+
+    cookie_str = f"sessionid={session_id};"
+    if uid:
+        cookie_str += f" ds_user_id={uid};"
+
     url = f"https://i.instagram.com/api/v1/media/{media_id}/comments/?can_support_threading=true"
     headers = {
         "User-Agent": "Instagram 300.0.0.18.110 (iPhone14,3; iOS 16_6; en_US; en-US; scale=3.00; 1170x2532; 513072223) AppleWebKit/420+",
-        "Cookie": f"sessionid={session_id};",
+        "Cookie": cookie_str,
         "Accept-Language": "tr-TR,en-US;q=0.9",
         "X-IG-App-ID": "936619743392459"
     }
@@ -202,7 +216,7 @@ def _fetch_instagram_comments_api(media_id: str, session_id: str) -> list:
         try:
             resp = requests.get(url, headers=headers, params=params, timeout=12)
             if resp.status_code != 200:
-                print(f"[Fetcher] Instagram API yanıtı: HTTP {resp.status_code}")
+                print(f"[Fetcher] Instagram API yanıtı: HTTP {resp.status_code} - {resp.text[:100]}")
                 break
             data = resp.json()
             raw_comments = data.get("comments") or []

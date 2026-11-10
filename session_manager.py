@@ -136,12 +136,27 @@ class SessionManager:
     def verify_instagram_session(self, session_id: str = None) -> tuple:
         """Instagram sessionid değerini Instagram API'sine canlı sorgu atarak doğrular."""
         import requests
+        import urllib.parse
         sid = session_id or self.get_instagram_session_id()
         if not sid:
             return False, "Tanımsız / Eksik"
+            
+        uid = ""
+        try:
+            decoded = urllib.parse.unquote(sid)
+            parts = decoded.split(":")
+            if parts and parts[0].isdigit():
+                uid = parts[0]
+        except Exception:
+            pass
+
+        cookie_str = f"sessionid={sid};"
+        if uid:
+            cookie_str += f" ds_user_id={uid};"
+
         headers = {
             "User-Agent": "Instagram 300.0.0.18.110 (iPhone14,3; iOS 16_6; en_US; en-US; scale=3.00; 1170x2532; 513072223) AppleWebKit/420+",
-            "Cookie": f"sessionid={sid};",
+            "Cookie": cookie_str,
             "X-IG-App-ID": "936619743392459"
         }
         try:
@@ -154,7 +169,19 @@ class SessionManager:
             if resp.status_code == 200:
                 return True, "🟢 Geçerli & Aktif (HTTP 200)"
             elif resp.status_code == 403:
-                return False, "🔴 Süresi Dolmuş (HTTP 403)"
+                try:
+                    data = resp.json()
+                    msg = data.get("message") or ""
+                    if "checkpoint" in msg or "challenge" in msg:
+                        return False, "⚠️ Güvenlik Onayı Gerekli (Instagram uygulamanızdan 'Bunu Ben Yaptım' onayını verin)"
+                    elif "login_required" in msg:
+                        return False, "🔴 Oturum Kapanmış / Çıkış Yapılmış (login_required)"
+                    elif "feedback_required" in msg:
+                        return False, "⚠️ Geçici Hız Sınırı (feedback_required - birkaç dakika bekleyin)"
+                    else:
+                        return False, f"🔴 HTTP 403: {msg or 'Erişim Engellendi'}"
+                except Exception:
+                    return False, "🔴 Süresi Dolmuş veya Engellenmiş (HTTP 403)"
             else:
                 return False, f"⚠️ HTTP {resp.status_code}"
         except Exception as e:
